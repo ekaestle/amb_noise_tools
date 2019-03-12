@@ -805,12 +805,12 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
     """
 #%%
     """ for debugging
-    frequencies=spectrum[:,0]
+    frequencies=freqax
     corr_spectrum=ccspec
     interstation_distance=dist
     ref_curve=ref_curve
     freqmin=min_freq
-    freqmax=freqmax
+    freqmax=1./min_period
     min_vel=min_vel
     max_vel=max_vel
     filt_width=3
@@ -857,7 +857,10 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
     while freq<=np.max(w_axis):
         ref_vel = func(freq)
         freq_step = ref_vel/(2*delta)
-        dv_cycle=np.abs(ref_vel-1./(1./(delta*freq) + 1./ref_vel)) # velocity jump corresponding to 2pi cycle jump
+        if len(picks)==0:
+            dv_cycle=np.abs(ref_vel-1./(1./(delta*freq) + 1./ref_vel)) # velocity jump corresponding to 2pi cycle jump
+        else:
+            dv_cycle=np.abs(picks[-1][1]-1./(1./(delta*freq) + 1./picks[-1][1]))
 #        filt_width = np.int(np.ceil(((np.max(w_axis)-np.min(w_axis))*0.05)/freq_step))
 #        if filt_width<3:
 #            filt_width=3
@@ -869,16 +872,20 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
         intercept_ref = ref_vel-slope_ref*freq
 
 
-        if len(picks)>int(three_freq_step/2): #three freq steps for prediction
+        if len(picks)>int(three_freq_step/2): #1.5 freq steps for prediction
             slope, intercept, r_value, p_value, std_err = \
                     linregress(np.array(picks)[-int(three_freq_step/2):,0],np.array(picks)[-int(three_freq_step/2):,1])    
         else:
             slope = slope_ref
             intercept = intercept_ref
-        if np.abs(np.arctan(slope) - np.arctan(slope_ref)) > np.pi*0.8: #value is chosen after testing
+        if len(picks)>int(three_freq_step):
+            accepted_slope = 0.9
+        else:
+            accepted_slope = 0.7
+        if np.abs(np.arctan(slope) - np.arctan(slope_ref)) > np.pi*accepted_slope: #value is chosen after testing
             slope = slope_ref
             if plotting:
-                print("freq: %.3f - removing picks because of inconsisten slope" %freq)
+                print("freq: %.3f - removing picks because of inconsisten slope (accepted slope: %f" %(freq,accepted_slope))
             for j in range(int(three_freq_step/4)+1):
                 picks.remove(picks[-1])
         else:
@@ -888,31 +895,59 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
         
 
         # STARTING INNER LOOP CREATING SMOOTHED IMAGE AT A SINGLE FREQUENCY
-        column=[]
-        vel=min_vel
-        while vel<max_vel:
-
-            # define expected cycle jump and smoothing window parameters
-            dv_cycle_small=np.abs(vel-1./(1./(delta*freq) + 1./vel))
-            #freq_step=vel/(2*delta)
-            ylim0=vel-filt_height*dv_cycle
-            ylim1=vel+filt_height*dv_cycle
-
-            if len(picks)>0:
-                if vel<picks[-1][1]-3*dv_cycle or vel>picks[-1][1]+3*dv_cycle:
-                    vel+=(1-y_overlap)*dv_cycle
-                    continue
-
-            intercept0 = ylim0-slope*freq
-            intercept1 = ylim1-slope*freq
-            values=crossings[(crossings[:,0]>xlim0)*(crossings[:,0]<xlim1)]
-            values=values[(values[:,1]>slope*values[:,0]+intercept0)*(values[:,1]<slope*values[:,0]+intercept1)]
-            column.append([freq,vel,len(values)*dv_cycle_small/dv_cycle])
-            vel+=(1-y_overlap)*dv_cycle
-
-
-        # STACK THE NEW (SMOOTH) COLUMN TO THE PREVIOUS ONES
-        column=np.array(column)
+        #column=[]
+        
+        if len(picks)>0:
+            vel0 = picks[-1][1]-3*dv_cycle
+            vel1 = picks[-1][1]+3*dv_cycle
+        else:
+            vel0 = min_vel
+            vel1 = max_vel
+            
+        # velocities at which the windows are centered
+        vel = np.arange(vel0,vel1,(1-y_overlap)*dv_cycle)
+        # define expected cycle jump and smoothing window parameters
+        dv_cycle_small = np.abs(vel-1./(1./(delta*freq) + 1./vel))
+        ylim0 = vel-filt_height*dv_cycle
+        ylim1 = vel+filt_height*dv_cycle
+        intercept0 = ylim0-slope*freq
+        intercept1 = ylim1-slope*freq
+        values=crossings[(crossings[:,0]>xlim0)*(crossings[:,0]<xlim1)]
+        
+        no_crossings = 0
+        for slope_var in [slope,slope*0.9,slope*1.1]:
+            temparr = np.reshape(np.tile(slope_var*values[:,0],len(intercept0)),(len(intercept0),len(values))).T
+            intercept0arr = temparr + intercept0
+            intercept1arr = temparr + intercept1
+            valarray = np.reshape(np.tile(values[:,1],len(intercept0)),(len(intercept0),len(values))).T
+            no_crossings_temp = np.sum((valarray>intercept0arr)*(valarray<intercept1arr),axis=0)
+            if np.max(no_crossings_temp) > np.max(no_crossings):
+                no_crossings = no_crossings_temp
+        column = np.column_stack((np.ones(len(vel))*freq,vel,no_crossings*dv_cycle_small/dv_cycle))             
+        
+#        vel=min_vel
+#        while vel<max_vel:
+#
+#            # define expected cycle jump and smoothing window parameters
+#            dv_cycle_small=np.abs(vel-1./(1./(delta*freq) + 1./vel))
+#            #freq_step=vel/(2*delta)
+#            ylim0=vel-filt_height*dv_cycle
+#            ylim1=vel+filt_height*dv_cycle
+#
+#            if len(picks)>0:
+#                if vel<picks[-1][1]-3*dv_cycle or vel>picks[-1][1]+3*dv_cycle:
+#                    vel+=(1-y_overlap)*dv_cycle
+#                    continue
+#
+#            intercept0 = ylim0-slope*freq
+#            intercept1 = ylim1-slope*freq
+#            values=crossings[(crossings[:,0]>xlim0)*(crossings[:,0]<xlim1)]
+#            values=values[(values[:,1]>slope*values[:,0]+intercept0)*(values[:,1]<slope*values[:,0]+intercept1)]
+#            column.append([freq,vel,len(values)*dv_cycle_small/dv_cycle])
+#            vel+=(1-y_overlap)*dv_cycle
+#
+#        # STACK THE NEW (SMOOTH) COLUMN TO THE PREVIOUS ONES
+#        column=np.array(column)
 #        if freq>freqmin:
 #            idxmax = argrelextrema(column[:,2],np.greater)[0]
 #            closest_vel = column[:,1][idxmax[np.abs(column[idxmax,1]-predicted_vel).argmin()]]
@@ -937,7 +972,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
             # CHECK 1: DID WE JUMP MORE THAN 3 ZERO CROSSINGS?
             if freq-picks[-1][0] > 3*freq_step:
                 if plotting:
-                    print("data quality too poor.")
+                    print("    %.3f: data quality too poor." %X[0][-three_freq_step+j])
                 if dv_cycle/(np.max(ref_curve[:,1]) - np.min(ref_curve[:,1])) < 1/3.:
                     if plotting:
                         print("stopping")
@@ -966,7 +1001,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
         # PHASE VEL CURVE PICKING
         # STEP 1: SMOOTHING OVER A three_freq_step WINDOW
         if np.size(Z)/ydim>three_freq_step:
-            smoothed = gaussian_filter(Z[:,-three_freq_step:],dv_cycle/dv_cycle_min/2.,mode='nearest',truncate=3.0)
+            smoothed = gaussian_filter(Z[:,-three_freq_step:],[dv_cycle/dv_cycle_min/2.,3],mode='nearest',truncate=3.0)
             if len(Z_smooth)==0:
                 Z_smooth = smoothed[:,:int(three_freq_step/2)]
             Z_smooth = np.column_stack((Z_smooth,smoothed[:,int(three_freq_step/2)]))
@@ -975,10 +1010,12 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
             # STEP 2: PICKING
             # IF NO PREVIOUS PICKS HAVE BEEN TAKEN: CHOOSING FIRST PICKS 
             if len(picks)==0:
+                if plotting:
+                    print("starting picking...")
                 if dv_cycle/(ref_curve[0,1] - ref_vel) < 0.25:
                     if plotting:
                         print("dv_cycle:",dv_cycle,"ref_curve[0,1]-ref_vel :",(ref_curve[0,1] - ref_vel))
-                        print("cycles are too close, stopping")
+                        print("%.2f: cycles are too close, stopping" %freq)
                     break
                 for j in range(np.int(three_freq_step/2)):
                     idxmax = argrelextrema(smoothed[:,j],np.greater)[0] #all indices of maxima
@@ -994,15 +1031,19 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
                         minamp = 0.0001
                         if idxmax[idxpick]==idxmax[-1] or idxmax[idxpick]==idxmax[0]: #there should be one faster and one slower maximum nearby.
                             # otherwise, use the amplitude at +- one cycle from the pick
-                            minamp = np.min(smoothed[(np.abs(yaxis-(yaxis[idxmax[idxpick]]+dv_cycle/2.)).argmin(),
-                                            np.abs(yaxis-(yaxis[idxmax[idxpick]]-dv_cycle/2.)).argmin()),j])
-                    if maxamp/(minamp+1e-5)>pick_threshold*2: # higher threshold for first picks
+                            minamp = np.min(smoothed[((yaxis>yaxis[idxmax[idxpick]]-dv_cycle)&(yaxis<yaxis[idxmax[idxpick]]+dv_cycle)),j])
+                            #minamp = np.min(smoothed[(np.abs(yaxis-(yaxis[idxmax[idxpick]]+dv_cycle/2.)).argmin(),
+                            #                np.abs(yaxis-(yaxis[idxmax[idxpick]]-dv_cycle/2.)).argmin()),j])
+                    if maxamp/(minamp+1e-5)>pick_threshold*1.5: # higher threshold for first picks
                         closest_vel = yaxis[idxmax[idxpick]]
                         if len(picks)>0:
-                            if np.abs(closest_vel-picks[-1][1])>0.2*dv_cycle:
+                            if np.abs(closest_vel-picks[-1][1])>0.1*dv_cycle+np.abs(ref_vel-func(picks[-1][0])):
                                 freq+=(1-x_overlap)*freq_step                                
                                 continue
                         picks.append([X[0][-three_freq_step+j],closest_vel])
+                    else:
+                        if plotting:
+                            print("   %.3f: amplitude of maximum too low, no first pick taken" %X[0][-three_freq_step+j])
                 if len(picks)<2:
                     picks=[]
                 else:
@@ -1033,10 +1074,14 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
                     minamp = 0.0001
                 if maxamp/(minamp+1e-5)>pick_threshold:
                     closest_vel = yaxis[idxmax[idxpick]]
-                    if np.abs(closest_vel-picks[-1][1])>0.3*dv_cycle:
+                    if np.abs(closest_vel-picks[-1][1])>0.2*dv_cycle+np.abs(ref_vel-func(picks[-1][0])):
                         freq+=(1-x_overlap)*freq_step
+                        if plotting:
+                            print("   %.3f: velocity jump too large" %X[0][-three_freq_step+j])
                         continue
                     picks.append([f_pick,closest_vel])
+                elif plotting:
+                    print("    %.3f: no pick taken" %X[0][-three_freq_step+j])
 
         if freq+(1-x_overlap)*freq_step > np.max(w_axis):
             freq += np.max([np.max(w_axis)-freq,0.001])
@@ -1087,7 +1132,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
                         picks.remove(picks[-1])
                             
     Z_smooth = np.column_stack((Z_smooth,smoothed[:,int(three_freq_step/2):]))
-
+    
     # CHECK IF THE BACKUP PICKS ("BAD" ONES DISCARDED BEFORE) HAVE THE BETTER COVERAGE
     if len(picks_backup)>len(picks):
         picks = picks_backup
@@ -1095,8 +1140,11 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
     # SMOOTH PICKED PHASE VELOCITY CURVE
     picks=np.array(picks)
     if len(picks)>three_freq_step:
-        smooth_picks = running_mean(picks[:,1],int(x_overlap*10)+1)
-        smooth_picks_x=picks[:,0]
+        picksfu = interp1d(picks[:,0],picks[:,1],bounds_error=False)
+        picks_interpolated = picksfu(X[0])
+        smoothingpicks = picks_interpolated[~np.isnan(picks_interpolated)]
+        smooth_picks = running_mean(smoothingpicks,int(x_overlap*10)+1)
+        smooth_picks_x=X[0][~np.isnan(picks_interpolated)]
     else:
         smooth_picks = []
         smooth_picks_x = []
@@ -1110,6 +1158,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
 #            smooth_picks_x = picks[:,0]     
     
     if plotting:
+        plt.ioff()
         plt.figure(figsize=(12,8))
         plt.pcolormesh(X,Y,Z_smooth)
         if len(picks)>0:
