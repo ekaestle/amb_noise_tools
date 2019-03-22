@@ -850,6 +850,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
     Z_smooth = np.array([])
     Z = np.array([])
     freq = np.min(w_axis)
+    slope_history = np.array([])
 
 
     # PICKING LOOP OVER THE FREQ AXIS
@@ -872,9 +873,15 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
         intercept_ref = ref_vel-slope_ref*freq
 
 
-        if len(picks)>int(three_freq_step/2): #1.5 freq steps for prediction
+        if len(picks)>int(three_freq_step/2): #1.5 freq steps for prediction  
             slope, intercept, r_value, p_value, std_err = \
-                    linregress(np.array(picks)[-int(three_freq_step/2):,0],np.array(picks)[-int(three_freq_step/2):,1])    
+                    linregress(np.array(picks)[-int(three_freq_step/2):,0],np.array(picks)[-int(three_freq_step/2):,1])  
+            slope_history = np.append(slope_history,slope)
+            if len(slope_history)>three_freq_step:
+                slope_predict, intercept, r_value, p_value, std_err = \
+                        linregress(np.arange(three_freq_step),slope_history[-three_freq_step:])
+                slope = slope_predict*three_freq_step+intercept
+                slope = np.mean(slope_history[-three_freq_step:])
         else:
             slope = slope_ref
             intercept = intercept_ref
@@ -892,7 +899,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
             slope = 0.33*slope_ref + 0.66*slope # for window determination
         if slope>0:
             slope=0
-        
+                    
 
         # STARTING INNER LOOP CREATING SMOOTHED IMAGE AT A SINGLE FREQUENCY
         #column=[]
@@ -910,12 +917,12 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
         dv_cycle_small = np.abs(vel-1./(1./(delta*freq) + 1./vel))
         ylim0 = vel-filt_height*dv_cycle
         ylim1 = vel+filt_height*dv_cycle
-        intercept0 = ylim0-slope*freq
-        intercept1 = ylim1-slope*freq
         values=crossings[(crossings[:,0]>xlim0)*(crossings[:,0]<xlim1)]
         
         no_crossings = 0
         for slope_var in [slope,slope*0.9,slope*1.1]:
+            intercept0 = ylim0-slope_var*freq
+            intercept1 = ylim1-slope_var*freq
             temparr = np.reshape(np.tile(slope_var*values[:,0],len(intercept0)),(len(intercept0),len(values))).T
             intercept0arr = temparr + intercept0
             intercept1arr = temparr + intercept1
@@ -925,33 +932,17 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
                 no_crossings = no_crossings_temp
         column = np.column_stack((np.ones(len(vel))*freq,vel,no_crossings*dv_cycle_small/dv_cycle))             
         
-#        vel=min_vel
-#        while vel<max_vel:
-#
-#            # define expected cycle jump and smoothing window parameters
-#            dv_cycle_small=np.abs(vel-1./(1./(delta*freq) + 1./vel))
-#            #freq_step=vel/(2*delta)
-#            ylim0=vel-filt_height*dv_cycle
-#            ylim1=vel+filt_height*dv_cycle
-#
-#            if len(picks)>0:
-#                if vel<picks[-1][1]-3*dv_cycle or vel>picks[-1][1]+3*dv_cycle:
-#                    vel+=(1-y_overlap)*dv_cycle
-#                    continue
-#
-#            intercept0 = ylim0-slope*freq
-#            intercept1 = ylim1-slope*freq
-#            values=crossings[(crossings[:,0]>xlim0)*(crossings[:,0]<xlim1)]
-#            values=values[(values[:,1]>slope*values[:,0]+intercept0)*(values[:,1]<slope*values[:,0]+intercept1)]
-#            column.append([freq,vel,len(values)*dv_cycle_small/dv_cycle])
-#            vel+=(1-y_overlap)*dv_cycle
-#
+        
+#        plt.figure()
+#        plt.plot(values[:,0],values[:,1],'k.')
+#        for icp in range(len(intercept0arr.T)):
+#            if column[icp][2] ==1.:
+#                print(icp)
+#                plt.plot(np.append(values[:,0],values[:,0]),np.append(intercept0arr.T[icp],intercept1arr.T[icp]))
+#                plt.plot(column[icp][0],column[icp][1],'kx')
+#        plt.show()
+
 #        # STACK THE NEW (SMOOTH) COLUMN TO THE PREVIOUS ONES
-#        column=np.array(column)
-#        if freq>freqmin:
-#            idxmax = argrelextrema(column[:,2],np.greater)[0]
-#            closest_vel = column[:,1][idxmax[np.abs(column[idxmax,1]-predicted_vel).argmin()]]
-#            picks.append([freq,closest_vel])
         column[:,2]/=np.max(column[:,2])
         yfunc = interp1d(column[:,1],column[:,2],bounds_error=False,fill_value=0.)
         if freq == np.min(w_axis):
@@ -997,11 +988,14 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
                             print("removing",picks[-1])
                         picks.remove(picks[-1])
 
-
         # PHASE VEL CURVE PICKING
         # STEP 1: SMOOTHING OVER A three_freq_step WINDOW
         if np.size(Z)/ydim>three_freq_step:
-            smoothed = gaussian_filter(Z[:,-three_freq_step:],[dv_cycle/dv_cycle_min/2.,3],mode='nearest',truncate=3.0)
+            # filter has adaptive smoothing in y direction (three_freq_step/3 is a constant)
+            #smoothed = gaussian_filter(Z[:,-three_freq_step:],[dv_cycle/dv_cycle_min/1.5,three_freq_step/((-slope+0.01)/5)],mode='nearest',truncate=3.0)
+            smoothed = gaussian_filter(Z[:,-three_freq_step:],[dv_cycle/dv_cycle_min/2,three_freq_step/3],mode='nearest',truncate=6.0)            
+            #smoothed = gaussian_filter(Z[:,-three_freq_step:],[0.01,0.01],mode='nearest',truncate=3.0)
+            
             if len(Z_smooth)==0:
                 Z_smooth = smoothed[:,:int(three_freq_step/2)]
             Z_smooth = np.column_stack((Z_smooth,smoothed[:,int(three_freq_step/2)]))
@@ -1163,7 +1157,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
         plt.pcolormesh(X,Y,Z_smooth)
         if len(picks)>0:
             plt.plot(picks[:,0],picks[:,1],'g.',ms=5,label='picks')
-        plt.plot(crossings[:,0],crossings[:,1],'k.',ms=3,label='crossings')
+        plt.plot(crossings[crossings[:,0]<=freq+0.1,0],crossings[crossings[:,0]<=freq+0.1,1],'k.',ms=3,label='crossings')
         plt.plot(smooth_picks_x,smooth_picks,'g',lw=1.5,label='smooth picks')
         plt.plot(ref_curve[:,0],ref_curve[:,1],lw=1.5,label='ref curve')
         plt.legend(numpoints=1)
