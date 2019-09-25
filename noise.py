@@ -450,9 +450,11 @@ def extract_phase_velocity(frequencies,corr_spectrum,interstation_distance,ref_c
         if len(pick)==0:
             # if more than 3 cycles (denominator) are within the velocity range between min and max vel of the reference curve
             # an unique choice of a first pick is probably not possible anymore
-            if dv_cycle/(np.max(ref_curve[:,1]) - np.min(ref_curve[:,1] + 0.01)) < 1/3.:
+            if dv_cycle/(np.max(ref_curve[:,1]) - np.min(ref_curve[:,1]) + 0.01) < 1/3.:
                 if plotting:
                     print("   freq: %.3f - cycles are too close, no first pick can be made. aborting" %freq)
+                    print("                dv_cycle: %f" %dv_cycle)
+                    print("                test value:",dv_cycle/(np.max(ref_curve[:,1]) - np.min(ref_curve[:,1] + 0.01)))
                 break
             if np.abs(closest_vel - ref_vel) > dv_cycle/2.:
                 if plotting:
