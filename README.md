@@ -12,6 +12,7 @@ Kaestle, E., R. Soomro, C. Weemstra, L. Boschi, and T. Meier, 2016. Two-receiver
 Boschi L., C. Weemstra, J. Verbeke, G. Ekstrom, A. Zunino and D. Giardini, 2013. On measuring surface-wave phase velocity from station-station cross-correlation of ambient signal. Geophys. J. Int., 192, 346--358, DOI: 10.1093/gji/ggs023. 
 
 In order to run these scripts you need a recent (as of February 2018) version of Python and the following packages
+
 numpy
 scipy
 matplotlib
