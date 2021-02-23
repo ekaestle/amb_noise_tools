@@ -49,7 +49,7 @@ if __name__ == '__main__':
             continue
             
         dist,az,baz = gps2dist_azimuth(stream1[0].stats.sac.stla,stream1[0].stats.sac.stlo,
-                                      stream2[0].stats.sac.stla,stream2[0].stats.sac.stlo)
+                                       stream2[0].stats.sac.stla,stream2[0].stats.sac.stlo)
     
         try:
             stream1,stream2 = noise.adapt_timespan(stream1,stream2)
@@ -95,9 +95,9 @@ if __name__ == '__main__':
     smoothed = noise.velocity_filter(freq,corr_spectrum,dist/1000.,cmin=1.5,cmax=5.5,return_all=False)
                                         
     crossings,phase_vel = noise.get_smooth_pv(freq,smoothed,dist/1000.,ref_curve,\
-                             freqmin=0.004,freqmax=0.25, min_vel=1.5, max_vel=5.5,\
-                            filt_width=3,filt_height=0.3,x_overlap=0.8,y_overlap=0.75,pick_threshold=1.7,\
-                           horizontal_polarization=True, smooth_spectrum=False,plotting=True)
+                            freqmin=0.004,freqmax=0.25, min_vel=1.5, max_vel=5.5,\
+                            filt_width=4,filt_height=0.5,x_step=0.5,pick_threshold=1.7,\
+                            horizontal_polarization=True, smooth_spectrum=False,plotting=True)
     
     plt.figure(figsize=(16,10))
     plt.subplot(2,2,1)
