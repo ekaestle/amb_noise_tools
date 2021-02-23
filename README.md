@@ -36,9 +36,11 @@ You can find a short description and the necessary input parameters for each of 
 The folder also includes two example scripts which can be used to check whether everything works as expected (with 4 days of data, not much but enough to get an impression).
 In example2 the FFT is calculated parallel on several cores to make it faster, however this parallel computing might cause some problems on Windows machines the way it is currently written.
 Either use a python interpreter such as Spyder or run it from your console by typing:
+
 python example1.py
 for ZZ cross-correlation and phase-velocity extraction.
 or
+
 python example2.py
 for TT cross-correlation and phase-velocity extraction.
 
