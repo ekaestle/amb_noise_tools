@@ -13,6 +13,7 @@ numpy
 scipy
 matplotlib
 obspy
+
 I recommend to use the Anaconda python package that can be installed on all types of machines.
 You can find a pre-packed installer, including obspy, on the Obspy webpage. With Anaconda, missing
 packages can be installed by typing in a console window
