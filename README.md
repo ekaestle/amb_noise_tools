@@ -4,8 +4,11 @@ This a set of Python functions that can be used to calculate ambient noise cross
 Please contact Emanuel Kaestle if you have any questions.
 
 This work is documented by three articles. At least the more recent one should be cited by anyone who uses this code:
+
 Kaestle, E., Molinari, I., Boschi, L., Kissling, E., 2021. Azimuthal anisotropy from Eikonal Tomography: example from ambient-noise measurements in the AlpArray network. In prep.
+
 Kaestle, E., R. Soomro, C. Weemstra, L. Boschi, and T. Meier, 2016. Two-receiver measurements of phase velocity: cross-validation of ambient-noise and earthquake-based observations. Geophys. J. Int., 207, 1493--1512, doi:10.1093/gji/ggw341. 
+
 Boschi L., C. Weemstra, J. Verbeke, G. Ekstrom, A. Zunino and D. Giardini, 2013. On measuring surface-wave phase velocity from station-station cross-correlation of ambient signal. Geophys. J. Int., 192, 346--358, DOI: 10.1093/gji/ggs023. 
 
 In order to run these scripts you need a recent (as of February 2018) version of Python and the following packages
