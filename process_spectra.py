@@ -51,6 +51,7 @@ phase_vel_path='./phase_vel_curves/' # path where to save the cross_correlation 
 ref_curve = np.loadtxt("Average_phase_velocity_rayleigh") # reference curve for picking
 statlist_file = "./statlist.txt" # location of station list file (3 columns, statname, lat, lon)
 velocity_filter = True # do a velocity filter between min and max velocity, recommended
+check_pos_neg_lagtime_correlations = True # accept dispersion curves only if the ones picked from the positive and negative lag time cross correlations are similar
 plotresult = True
 # SECTION ABOUNT SNR FILTERS. This is a filter applied only at the very end, discarding parts of the phase-velocity curves where the SNR is lower than a certain threshold
 # this has not been tested a lot yet. I recommend to keep the filters on False for most applications.
@@ -81,7 +82,7 @@ filt_height, x_step, pick_threshold. See documentation of noise.py.
 - the file name recognition pattern may have to be changed if your cross
 correlation files have a different naming scheme. Please check if you encounter
 any errors.
-- feel free to contact me if you have questions under emanuel.kaestle@fu-berlin.de
+- feel free to contact me if you have questions: emanuel.kaestle@fu-berlin.de
 """
 
 if (velocity_filter==False and snr_filter_time_domain) or (velocity_filter==False and snr_filter_time_domain):
@@ -433,24 +434,39 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
     accepted = False
     phase_vel = phasevel_curves[0] # save only symmetric result
     
+    
     if len(phasevel_curves)==3:
-        
-        accepted = True  
         
         fw_bw_diff = np.abs(np.interp(ref_curve[:,0],phasevel_curves[1][:,0],phasevel_curves[1][:,1],left=np.nan,right=np.nan)-
                             np.interp(ref_curve[:,0],phasevel_curves[2][:,0],phasevel_curves[2][:,1],left=np.nan,right=np.nan))
         
         quality_check_collection.append(fw_bw_diff)
         
+    else:
+        
+        quality_check_collection.append(np.nan)
+    
+    
+    if len(phasevel_curves)==3 and check_pos_neg_lagtime_correlations:
+        
+        accepted = True
+        
         if np.nanmean(fw_bw_diff) > 0.3 or np.sum(~np.isnan(fw_bw_diff))<10:
             print("    quality check failed for station pair",stat1,stat2)
-            accepted = False            
-                
+            accepted = False
+        else:
+            accepted = True
+  
         #plt.figure()
         #plt.plot(fax,np.interp(fax,phasevel_curves[1][:,0],phasevel_curves[1][:,1]))
         #plt.plot(fax,np.interp(fax,phasevel_curves[2][:,0],phasevel_curves[2][:,1]))
         #plt.plot(phase_vel[:,0],phase_vel[:,1])
         #plt.show()
+
+    elif len(phasevel_curves)>0 and not check_pos_neg_lagtime_correlations:
+        
+        accepted = True
+        
 
     if accepted:
         np.savetxt(os.path.join(phase_vel_path,fname.split("/")[-1]+"_curve"),phase_vel,fmt="%.5f %.3f")
@@ -464,9 +480,11 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         fig = plt.figure(figsize=(16,8))
         plt.suptitle(stat1+"_"+stat2+"   dist: %dkm   SNR: %.1f" %(dist,overall_snr))
         plt.subplot(221)
-        plt.plot((np.arange(len(spec_symm)*2-2)-len(spec_symm)+1)*dt,np.fft.fftshift(np.fft.irfft(spec_symm)),'k',linewidth=0.8,label='raw cc')
+        plt.plot((np.arange(len(spec_symm)*2-2)-len(spec_symm)+1)*dt,
+                 np.fft.fftshift(np.fft.irfft(spec_symm)),'k',linewidth=0.8,label='raw cc')
         if velocity_filter:
-            plt.plot((np.arange(len(spec_symm)*2-2)-len(spec_symm)+1)*dt,np.fft.fftshift(tcorr_symm),'r--',linewidth=0.6,label='cc filtered and symmetric')
+            plt.plot((np.arange(len(spec_symm)*2-2)-len(spec_symm)+1)*dt,
+                     np.fft.fftshift(tcorr_symm),'r--',linewidth=0.6,label='cc filtered and symmetric')
         plt.legend(numpoints=1)
         plt.xlim(dist/min_vel*-2.,dist/min_vel*2)
         plt.title("CC")
@@ -478,6 +496,7 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         plt.legend(numpoints=1)
         plt.title("real CC spectrum")
         plt.xlabel('frequency [Hz]')
+        plt.xlim(min_freq,max_freq)
         ax = plt.subplot(223)
         plt.plot(1./phase_vel[:,0],phase_vel[:,1],'ro',ms=4,label='picked phase vels')
         plt.plot(1./crossings_symm[:,0],crossings_symm[:,1],'ko',ms=1,label='crossings')
