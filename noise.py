@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 """
+Updated June 2021
+the cross correlation function checks for time shifts and shifts the correlation function automatically
+
 Last update: 14.05.2018
 Adapted for Python3 now
 
@@ -52,30 +55,25 @@ def adapt_timespan(st1,st2):
     :rtype: :class: `~obspy.core.stream`
     :returns: stream1 and stream2 sliced    
     """
-    # this has to be done twice, because otherwise there sometimes occurs a 1s timeshift
-    for adapt in range(2):
-        start=UTCDateTime(0)
-        end=UTCDateTime(9e9)
-        for tr in st1:
-            if tr.stats.starttime>start:
-                start=tr.stats.starttime
-            if tr.stats.endtime<end:
-                end=tr.stats.endtime
-        for tr in st2:
-            if tr.stats.starttime>start:
-                start=tr.stats.starttime
-            if tr.stats.endtime<end:
-                end=tr.stats.endtime
-        
-        if end<start:
-            raise Exception('No common time range')
-        
-        st1=st1.slice(start,end)
-        st2=st2.slice(start,end)
-        for tr in st1:
-            tr.stats.starttime=start
-        for tr in st2:
-            tr.stats.starttime=start
+
+    start=UTCDateTime(0)
+    end=UTCDateTime(9e9)
+    for tr in st1:
+        if tr.stats.starttime>start:
+            start=tr.stats.starttime
+        if tr.stats.endtime<end:
+            end=tr.stats.endtime
+    for tr in st2:
+        if tr.stats.starttime>start:
+            start=tr.stats.starttime
+        if tr.stats.endtime<end:
+            end=tr.stats.endtime
+    
+    if end<start:
+        raise Exception('No common time range')
+    
+    st1=st1.slice(start,end)
+    st2=st2.slice(start,end)
             
     return st1,st2
 
@@ -116,6 +114,8 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
     The streams are cut to a common time range and sliced into windows of
     length 'window_length' [s]. The windows are correlated in the frequency 
     domain with an overlap of 'overlap'.\n
+    If there is a sub-sample time shift between the traces, it is automatically
+    corrected for in the end.\n
     The traces can be tapered and normalized beforehand. The cos taper is
     applied to the beginning and ending 'taper_width' percent of each window
     in the time domain. Spectral whitening divides each spectrum by its
@@ -160,6 +160,13 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
     else:
         raise Exception('Both input streams should have the same sampling \
                          rate!')
+                         
+    # check for time shifts that should be corrected for in the end
+    time_shift = tr1.stats.starttime - tr2.stats.starttime
+    # if trace1 starts later, the time_shift is positive. With the formula 
+    # below this will result in a shift of the CC function in negative direction.
+    # this should be the correct behaviour
+                         
     win_samples=int(window_length/dt)
     data1 = tr1.data
     data2 = tr2.data
@@ -199,6 +206,10 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
             
         # actual correlation in the frequency domain
         CORR=np.conj(D1)*D2
+        
+        # correct for time shift
+        if time_shift != 0.:
+            CORR *= np.exp(1j*2*np.pi*time_shift)
 
         # summing all time windows
         if i==0:
