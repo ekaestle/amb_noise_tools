@@ -2,7 +2,8 @@
 """
 Updated June 2021
 script makes sure now that the horizontal traces are sampled at the same points in time
-if there is a large subsample time shift. Before, this would result in an error. 
+if there is a large subsample time shift. Before, this would result in an error.
+
 
 @author: emanuel
 """
@@ -22,35 +23,40 @@ path='./preprocessed_data'
 
 # only files with these file endings are being read
 # (capitalization is not important)
-formats = ['mseed','SAC','sync']
-
-# station list (file is created if not existing yet)
-statfilepath = './statlist.txt' # 3 columns: station_id latitude longitude
-
-# path where the cross correlation spectra should be saved
-# if there are already existing files with the same name, they may be overwritten
-# unless you set update=True
-spectra_path='cross_correlation_spectra'
-
-# update already existing crosscorrelation files if new data has been added
-# to the database. If set to False, old files are overwritten!
-update = True
+formats = ['mseed','SAC','sync'] # for example: ['mseed','SAC'] or leave empty []
 
 # filename of sqlite database (created if not yet existing)
 # this database lists all existing files, components, available timeranges, etc.
 database_file = 'database_ambnoise.sqlite'
+
 # check if there are new files in the path. The sqlite database is then updated
-update_database = True
+update_database = True # recommended to be True
+
+# station list (file is created if not existing yet)
+statfilepath = './statlist.txt' # 3 columns: station_id latitude longitude
+
+# check if there are stations missing in the the 'statfilepath' file.
+# missing information is added from the station xml metadata if available
+update_statlist = True # recommended to be True if working with xml inventory files
+
+# OPTIONAL: folder where the station inventory files are stored (to get station location information)
+# if there are no xml files, the lat/lon information has to be provided via the statfile
+# or in the headers of the sac input files
+inventory_directory = "./station_inventory" # xml inventory files
+
+# path where the cross correlation spectra should be saved
+# new data will be added to existing *.pkl files in that folder
+spectra_path='cross_correlation_spectra'
 
 # traces are cut into windows. windowed data is then correlated
 # ideal length depends on your typical station distances and if you're interested in the coda
 window_length=3600. # in seconds
 
 # overlap of subsequent windows (recommended between 0.3 and 0.6)
-overlap = 0.6
+overlap = 0.5
 
 # minimum allowed inter-station distance in km
-min_distance = 5. 
+min_distance = 2. 
 
 # whiten spectra prior to cross correlation (see Bensen et al. 2007)
 whiten = True
@@ -72,7 +78,6 @@ only_process_these_stations = None
 
 # if necessary, see also other parameters for function noise.noisecorr below.
 """ END OF USER DEFINED PARAMETERS"""
-
 
 from mpi4py import MPI
 import numpy as np
@@ -148,6 +153,19 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 if len(st2)>1:
                     st2 = Stream(st2[np.array(list(map(len,st2))).argmax()])
                 
+            if np.std(st1[0].data) == 0. or np.std(st2[0].data) == 0. :
+                print("data all zero",file=flog)
+                print(st1,file=flog)
+                print(st2,file=flog)
+                continue
+                       
+            if (np.isnan(st1[0].data).any() or np.isnan(st2[0].data).any() or
+                np.isinf(st1[0].data).any() or np.isinf(st2[0].data).any() ):
+                print("nan/inf in data",file=flog)
+                print(st1,file=flog)
+                print(st2,file=flog)
+                continue
+            
             try:
                 freq,spec = noise.noisecorr(st1[0],st2[0],window_length,overlap,
                                             whiten=whiten,onebit=onebit)
@@ -168,15 +186,15 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 corr_dict = pickle.load(f)
         
             if (year,julday) in corr_dict['corrdays']:
-                raise Exception("correlation day already in database!",filepath,year,julday)            
-            
-            corr_dict['corrdays'].append((year,julday))
-            corr_dict['spectrum'] = np.average([corr_spectrum,
-                                            corr_dict['spectrum']],
-                                            axis=0,
-                                            weights=[np.sum(no_windows),
-                                                     corr_dict['no_wins']])
-            corr_dict['no_wins'] += np.sum(no_windows)
+                print("correlation day already in database!",filepath,year,julday, "skipping")          
+            else:
+                corr_dict['corrdays'].append((year,julday))
+                corr_dict['spectrum'] = np.average([corr_spectrum,
+                                                    corr_dict['spectrum']],
+                                                   axis=0,
+                                                   weights=[np.sum(no_windows),
+                                                            corr_dict['no_wins']])
+                corr_dict['no_wins'] += np.sum(no_windows)
 
         else:
             
@@ -225,8 +243,6 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
         
  
 
-
-       
     if 'TT' in corrcomp or 'RR' in corrcomp:          
         
         stream1n = stream.select(network=net1,station=sta1,component='N')
@@ -321,6 +337,15 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 print(st1,file=flog)
                 print(st2,file=flog)
                 print("number of traces in stream is not okay",file=flog)
+                raise Exception()
+                continue
+            
+            # check that traces are not all zero
+            if (np.std(st1[0].data) == 0. or np.std(st1[1].data) == 0. or
+                np.std(st2[0].data) == 0. or np.std(st2[1].data) == 0. ):
+                print("data all zero",file=flog)
+                print(st1,file=flog)
+                print(st2,file=flog)
                 continue
             
             # check that the time span is really the same
@@ -342,7 +367,16 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                                st2[0].stats.endtime,st2[1].stats.endtime])
                 st1 = st1.slice(starttime=tstart,endtime=tend)
                 st2 = st2.slice(starttime=tstart,endtime=tend)
-                            
+              
+            # check for nan/inf values
+            if (np.isnan(st1[0].data).any() or np.isnan(st1[1].data).any() or
+                np.isnan(st2[0].data).any() or np.isnan(st2[1].data).any() or
+                np.isinf(st1[0].data).any() or np.isinf(st1[1].data).any() or
+                np.isinf(st2[0].data).any() or np.isinf(st2[1].data).any() ):
+                print("nan/inf in data",file=flog)
+                print(st1,file=flog)
+                print(st2,file=flog)
+                continue
             # az = azimuth from station1 -> station2
             # baz = azimuth from station2 -> station1
             # for stream2 the back azimuth points in direction of station1
@@ -354,14 +388,14 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
             except:
                 print("Error rotating stream",file=flog)
                 print(st1,file=flog)
-                print("error rotating stream!",file=flog)
+                raise Exception("Error rotating stream")
                 continue
             try:
                st2.rotate('NE->RT',back_azimuth=pairdict[pair]['baz'])
             except:
                 print("Error rotating stream",file=flog)
                 print(st2,file=flog)
-                print("error rotating stream!",file=flog)
+                raise Exception("Error rotating stream")
                 continue
                     
             try:
@@ -588,31 +622,9 @@ if __name__ == "__main__":
         flog = open(logfile,'w')
     print("\n Starting processing\n ",datetime.datetime.now(),"\n------------\n",file=flog,flush=True)
 
-    statdict={}
-    create_statlist=False
-    if os.path.isfile(statfilepath):
-        with open(statfilepath,'r') as f:
-            for line in f:
-                line = line.split()
-                statdict[line[0]] = {}
-                statdict[line[0]]['latitude'] = float(line[1])
-                statdict[line[0]]['longitude'] = float(line[2])
-                try:
-                    statdict[line[0]]['elevation'] = float(line[3])
-                except:
-                    pass
-    else:
-        print("creating statlist from files")
-        create_statlist=True
-        
-    # find inventory files
-    inventory_filelist = []
-    if mpi_rank == 0:
-        inventory_filelist = glob.glob(os.path.join(inventory_directory,"**/*.xml"),recursive=True)
-    inventory_filelist = mpi_comm.bcast(inventory_filelist,root=0)
     
-    
-    #%%#############################################################################
+    #%%#######################################################################
+    # UPDATING THE DATABASE
     
     formats_all = []
     for fileformat in formats:
@@ -647,9 +659,14 @@ if __name__ == "__main__":
         pathlist = [i[0] for i in paths]
         for fpath in pathlist:
             if not os.path.isfile(fpath):
-                print("error",fpath)
-                print("deleting from database")
-                c.execute("DELETE FROM file_db WHERE path=?", (fpath,))
+                fpath_alt = fpath.replace("emanuelk","emanuel")
+                if os.path.isfile(fpath_alt):
+                    c.execute("UPDATE file_db SET path=? WHERE path=?", (fpath_alt,fpath,))
+                    print("updating",fpath_alt)
+                else:
+                    print("error",fpath)
+                    print("deleting from database")
+                    c.execute("DELETE FROM file_db WHERE path=?", (fpath,))
         conn.commit()
         # check for new paths
         count = 0
@@ -657,11 +674,9 @@ if __name__ == "__main__":
         new_paths = set(pathlist_new) - set(pathlist) #elements that are uniquely in pathlist_new
         print(len(new_paths),"new paths found",flush=True)
         #new_paths = set(pathlist).symmetric_difference(set(pathlist_new))
-        print("adding new entries...")
+        print("adding new entries (for each file the header is being read, this may take a while)...")
         #errorfile = open("read_errors_database.txt","w")
         #print("check for errors in",errorfile)
-        if create_statlist:
-            new_paths = set(pathlist_new).union(set(pathlist))
         for filepath in new_paths:
             #print "adding new entry:",filepath
             fname = os.path.basename(filepath)
@@ -677,9 +692,14 @@ if __name__ == "__main__":
                     f.write("could not read file: %s" %filepath)
                 continue
                
-                    
             net = header[0].stats.network
             sta = header[0].stats.station
+            for head in header:
+                if head.stats.network != net or head.stats.station != sta:
+                    print("Warning! Each file is supposed to contain data from one station. Other traces in the file are ignored.")
+                    print(filepath)
+                    print("network:",net,"station:",sta,"ignored station,network:",head.stats.network,head.stats.station)
+                    break
             if sta=="":
                 sta = fname[:3]
                 #print("file header is missing the station name! script will not work!")
@@ -699,29 +719,7 @@ if __name__ == "__main__":
             
             #net,sta,loc,cha,year0,jday0,hr0,min0,sec0,year1,jday1,hr1,min1,sec1,fileformat = fname.split(".")
             staid = net+'.'+sta
-            if not staid in statdict.keys():
-                statdict[staid] = {}
-                try:
-                    statdict[staid]['latitude'] = header[0].stats.sac.stla
-                    statdict[staid]['longitude'] = header[0].stats.sac.stlo
-                except:
-                    try:
-                        inv_filepaths = []
-                        for inv_filepath in inventory_filelist:
-                            if (inv_filepath.split("/")[-1].split(".")[0] == net and
-                                inv_filepath.split("/")[-1].split(".")[1] == sta):
-                                inv_filepaths.append(inv_filepath)
-                        if len(inv_filepaths) == 1:
-                            inv_filepath = inv_filepaths[0]
-                        else:
-                            raise Exception("more than one inventory file for station",net,sta,inv_filepaths)
-                        inventory = read_inventory(inv_filepath)
-                        statdict[staid]['latitude'] = inventory[0][0].latitude
-                        statdict[staid]['longitude'] = inventory[0][0].longitude                      
-                    except:
-                        print("could not get any lat/lon information for station",net,sta)
 
-                
             comp = cha[-1]
             tstart = UTCDateTime(year=int(year0),julday=int(jday0),hour=int(hr0),minute=int(min0),second=int(sec0))
             tend = UTCDateTime(year=int(year1),julday=int(jday1),hour=int(hr1),minute=int(min1),second=int(sec1))
@@ -729,20 +727,19 @@ if __name__ == "__main__":
                 c.execute("INSERT INTO file_db (staid,component,starttime,endtime,path) VALUES(?,?,?,?,?)",
                           (staid, comp, str(tstart), str(tend), filepath))
             except sqlite3.IntegrityError:
-                if not create_statlist:
-                    print('Warning: row already exists in table!')
-                    print(net,sta,loc,cha,tstart,tend)
-                    #print(tr.stats.network,tr.stats.station,cha,comp,tstart,tend)
-                    c.execute("SELECT * FROM file_db WHERE staid=? and component =? and starttime=?",(staid, comp, str(tstart)))
-                    entry = c.fetchall()[0]
-                    staid_2,comp_2,tstart_2,tend_2,path_2 = entry
-                    print("existing entry:",path_2)
-                    print("new filepath:",filepath)
-                    if tend > UTCDateTime(tend_2):
-                        c.execute("DELETE FROM file_db WHERE staid=? and component =? and starttime=?",(staid, comp, str(tstart)))
-                        c.execute("INSERT INTO file_db (staid,component,starttime,endtime,path) VALUES(?,?,?,?,?)",
-                              (staid, comp, str(tstart), str(tend), filepath))
-                    print('-----')
+                print('Warning: row already exists in table!')
+                print(net,sta,loc,cha,tstart,tend)
+                #print(tr.stats.network,tr.stats.station,cha,comp,tstart,tend)
+                c.execute("SELECT * FROM file_db WHERE staid=? and component =? and starttime=?",(staid, comp, str(tstart)))
+                entry = c.fetchall()[0]
+                staid_2,comp_2,tstart_2,tend_2,path_2 = entry
+                print("existing entry:",path_2)
+                print("new filepath:",filepath)
+                if tend > UTCDateTime(tend_2):
+                    c.execute("DELETE FROM file_db WHERE staid=? and component =? and starttime=?",(staid, comp, str(tstart)))
+                    c.execute("INSERT INTO file_db (staid,component,starttime,endtime,path) VALUES(?,?,?,?,?)",
+                          (staid, comp, str(tstart), str(tend), filepath))
+                print('-----')
             count += 1
             if count%1000 == 0:
                 conn.commit()
@@ -751,10 +748,89 @@ if __name__ == "__main__":
 
         print("Database successfully updated.",flush=True)
     
-        if create_statlist:
+    #%%#######################################################################
+    # UPDATING THE STATION DICTIONARY
+    
+    statdict={}
+    create_statlist=False
+    if os.path.isfile(statfilepath):
+        with open(statfilepath,'r') as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                line = line.split()
+                statdict[line[0]] = {}
+                statdict[line[0]]['latitude'] = float(line[1])
+                statdict[line[0]]['longitude'] = float(line[2])
+                try:
+                    statdict[line[0]]['elevation'] = float(line[3])
+                except:
+                    pass
+    else:
+        print("no statlist found, creating statlist from files")
+        create_statlist=True
+        
+    if (create_statlist or update_statlist) and mpi_rank==0:
+        
+        # find inventory files
+        inventory_filelist = []
+        if mpi_rank == 0:
+            for dir_,_,files in os.walk(inventory_directory):
+                for file in files:
+                    if file.lower().endswith("xml"):
+                        inventory_filelist.append(os.path.join(dir_,file))
+        inventory_filelist = mpi_comm.bcast(inventory_filelist,root=0)
+        
+        conn = sqlite3.connect(database_file)
+        c = conn.cursor()
+        c.execute("SELECT staid FROM file_db")
+        station_ids = np.unique(c.fetchall())
+        
+        for staid in station_ids:
+            net = staid.split(".")[0]
+            sta = staid.split(".")[1]
+            if not staid in statdict.keys():
+                # try to get the lat lon information from the station xml files
+                statdict[staid] = {}
+                inv_filepaths = []
+                for inv_filepath in inventory_filelist:
+                    if net in inv_filepath and sta in inv_filepath:
+                        inv_filepaths.append(inv_filepath)
+                for inv_filepath in inv_filepaths:
+                    inventory = read_inventory(inv_filepath)
+                    if inventory[0].code == net and inventory[0][0].code==sta:
+                        statdict[staid]['latitude'] = inventory[0][0].latitude
+                        statdict[staid]['longitude'] = inventory[0][0].longitude
+                        try:
+                            statdict[staid]['elevation'] = inventory[0][0].elevation
+                        except:
+                            pass
+                        break
+                else:
+                    try: # try to get the station information from the sac headers
+                         # if the input files are not sac, will not work
+                        c.execute("SELECT path FROM file_db WHERE staid=?",(staid,))
+                        filepath = c.fetchall()[0][0]
+                        header = read(filepath,headonly=True)
+                        statdict[staid]['latitude'] = header[0].stats.sac.stla
+                        statdict[staid]['longitude'] = header[0].stats.sac.stlo
+                    except:
+                        print("could not get any lat/lon information for station",net,sta)
+        
+        conn.close()
+        
+        if create_statlist or update_statlist:
             with open(statfilepath,"w") as f:
-                for staid in statdict:
-                    f.write("%s %.6f %.6f\n" %(staid,statdict[staid]['latitude'],statdict[staid]['longitude']))
+                f.write("# staid     lat       lon      elevation\n")
+                for staid in np.sort(list(statdict.keys())):
+                    staid_str = staid + (9-len(staid))*" " 
+                    if 'elevation' in statdict[staid].keys():
+                        f.write("%s %9.6f %10.6f %8.3f\n" %(staid_str,statdict[staid]['latitude'],
+                                                            statdict[staid]['longitude'],
+                                                            statdict[staid]['elevation']))
+                    else:
+                        f.write("%s %9.6f %10.6f\n" %(staid_str,statdict[staid]['latitude'],
+                                                      statdict[staid]['longitude']))
     
     #%%
         
@@ -864,6 +940,7 @@ if __name__ == "__main__":
             
         
         existing_files = glob.glob(os.path.join(spectra_path,"**/*.pkl"),recursive=True)
+
         
         existing_corrdays = {}    
         for i,pair in enumerate(list(pairdict)): 
@@ -871,44 +948,45 @@ if __name__ == "__main__":
             for corrcomp in comp_correlations:  
                 existing_corrdays[pair][corrcomp] = []
         
-        if update:
             
-            # check that there is only one file for each pair
-            print("reading existing files")
-            for i,pair in enumerate(list(pairdict)):
-                
-                if i%10000==0:
-                    print(i)
-                                
-                for corrcomp in comp_correlations:
-                                        
-                    filepath1 = getfilepath(pair[0],pair[1],corrcomp,pairdict[pair]['dist'],overlap)
-                    filepath2 = getfilepath(pair[1],pair[0],corrcomp,pairdict[pair]['dist'],overlap)
-    
-                    if os.path.isfile(filepath1):
-                        
-                        if os.path.isfile(filepath2):
-                            print(filepath1)
-                            print(filepath2)
-                            raise Exception("two files for the same pair!")
+        # check that there is only one file for each pair
+        print("reading existing files")
+        for i,pair in enumerate(list(pairdict)):
+            
+            if i%10000==0:
+                print(i)
                             
-                        with open(filepath1,"rb") as f:
-                            corr_dict = pickle.load(f)
-                            
-                    elif os.path.isfile(filepath2):
+            for corrcomp in comp_correlations:
+                                    
+                filepath1 = getfilepath(pair[0],pair[1],corrcomp,pairdict[pair]['dist'],overlap)
+                filepath2 = getfilepath(pair[1],pair[0],corrcomp,pairdict[pair]['dist'],overlap)
 
-                        print("warning: renaming dictionary file!")                        
-                        with open(filepath2,"rb") as f:
-                            corr_dict = pickle.load(f)
-                        with open(filepath1,"wb") as f:
-                            pickle.dump(corr_dict,f)
-                        os.remove(filepath2)
+                if os.path.isfile(filepath1):
+                    
+                    if os.path.isfile(filepath2):
+                        print(filepath1)
+                        print(filepath2)
+                        raise Exception("two files for the same pair!")
                         
-                    else:
-                        continue
-                
-                    existing_corrdays[pair][corrcomp] = corr_dict['corrdays']
-                                       
+                    with open(filepath1,"rb") as f:
+                        corr_dict = pickle.load(f)
+                        
+                elif os.path.isfile(filepath2):
+
+                    print("warning: renaming dictionary file!")                        
+                    with open(filepath2,"rb") as f:
+                        corr_dict = pickle.load(f)
+                    with open(filepath1,"wb") as f:
+                        pickle.dump(corr_dict,f)
+                    os.remove(filepath2)
+                    
+                else:
+                    continue
+            
+                existing_corrdays[pair][corrcomp] = corr_dict['corrdays']
+      
+        
+                             
         # cleanup
         database_list = []
         statlist = []
@@ -924,7 +1002,7 @@ if __name__ == "__main__":
     #%%######################
     """ PROCESS LOOP """
     time_start=datetime.datetime.now()
-    no_processed_days = 0   
+    no_processed_days = 0
     
     
     for corrday in available_corrdays:
@@ -934,6 +1012,8 @@ if __name__ == "__main__":
         
         if year not in years and len(years)>0:
             continue
+        #if not day==3:
+        #    continue
                         
         if mpi_rank==0:
             print("working on correlation day:",year,day)
