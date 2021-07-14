@@ -1,31 +1,38 @@
 # -*- coding: utf-8 -*-
 """
-Updated June 2021
-the cross correlation function checks for time shifts and shifts the correlation function automatically
-
-Last update: 14.05.2018
-Adapted for Python3 now
-
-@author: emanuel
-
 Set of functions for the Ambient Noise correlation. Procedure originally 
 developed by Kees Weemstra.
+
+Autor: Emanuel Kaestle (emanuel.kaestle@fu-berlin.de)
+
+# # # Updates # # #
+
+Updated July 2021
+- The time shift correction has been removed from the cross correlation function.
+  The problem of potential time shifts is now solved with the updated 
+  adapt_timespan function
+- The get_smooth_pv function has been rewritten. The results seem to be
+  slightly improved. The documentation and structure of the function should
+  be much clearer now.
+
+Updated June 2021
+the cross correlation function checks for time shifts and shifts the 
+correlation function automatically
+
+Updated May 2018
+Adapted for Python3
+
 """
 
 import numpy as np
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d,griddata
 from scipy.special import jn_zeros,jv
 from scipy.stats import linregress
 from scipy.signal import detrend
-#from scipy.signal import argrelextrema
-#from scipy.interpolate import griddata
-#from scipy.ndimage.filters import gaussian_filter
 from obspy.signal.invsim import cosine_taper
-#from obspy.signal.filter import lowpass
 from scipy.signal import find_peaks
-from obspy.core import UTCDateTime, Stream
+from obspy.core import Stream
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from scipy.interpolate import LSQUnivariateSpline
 from scipy.optimize import curve_fit
 
@@ -43,39 +50,99 @@ def running_mean(x, N):
     return runmean
 
 ##############################################################################
-def adapt_timespan(st1,st2):
+def adapt_timespan(st1,st2,min_overlap=0.,interpolate=True):
     """
-    Slices all traces from the two input streams to the same timerange.
-    Returns sliced streams.\n
-    If there is no common time range an exception is raised.\n  
-    
-    .. rubric:: Basic Usage
-    >>>  st1_sliced, st2_sliced = adapt_timespan(st1,st2)
-    
-    :rtype: :class: `~obspy.core.stream`
-    :returns: stream1 and stream2 sliced    
+    Slices all traces from the two input streams to the overlapping timerange.
+    Returns a copy of the sliced streams.\n
+    If the starttime of the sliced traces do not fit exactly (because of sub-
+    sample time shifts), the traces are interpolated to remove this time shift.
+    If there is no common time range a warning is printed.\n  
+
+    Parameters
+    ----------
+    st1 : `~obspy.core.stream`
+        Obspy stream object containing the first stream whose traces should
+        be sliced to the common time range(s).
+    st2 : `~obspy.core.stream`
+        Obspy stream object containing the second stream whose traces should
+        be sliced to the common time range(s).
+    min_overlap : float, optional
+        The minimum overlap in seconds for two traces. Shorter overlapping
+        traces are ignored. The default is 0.
+    interpolate : BOOL, optional
+        If set to True, subsample time shifts are correced by interpolation.
+        The default is True.
+
+    Raises
+    ------
+    Exception
+        Exception is raised if one of the input streams is empty.
+
+    Returns
+    -------
+    st1_out : `~obspy.core.stream`
+        Obspy stream object containing a copy of the overlapping, sliced
+        traces of st1.
+    st2_out : `~obspy.core.stream`
+        Obspy stream object containing a copy of the overlapping, sliced
+        traces of st2.
     """
 
-    start=UTCDateTime(0)
-    end=UTCDateTime(9e9)
-    for tr in st1:
-        if tr.stats.starttime>start:
-            start=tr.stats.starttime
-        if tr.stats.endtime<end:
-            end=tr.stats.endtime
-    for tr in st2:
-        if tr.stats.starttime>start:
-            start=tr.stats.starttime
-        if tr.stats.endtime<end:
-            end=tr.stats.endtime
-    
-    if end<start:
-        raise Exception('No common time range')
-    
-    st1=st1.slice(start,end)
-    st2=st2.slice(start,end)
+
+    if len(st1) == 0:
+        raise Exception('Stream 1 is empty')
+    if len(st2) == 0:
+        raise Exception('Stream 2 is empty')
+        
+    st1_out = Stream()
+    st2_out = Stream()
+        
+    for tr1 in st1:
+        for tr2 in st2:
             
-    return st1,st2
+            if tr1.stats.starttime > tr2.stats.starttime:
+                tstart = tr1.stats.starttime
+            else:
+                tstart = tr2.stats.starttime
+            if tr1.stats.endtime > tr2.stats.endtime:
+                tend = tr2.stats.endtime
+            else:
+                tend = tr1.stats.endtime
+
+            # traces with overlapping time range found
+            if tend >= tstart + min_overlap:
+                tr1=tr1.slice(tstart,tend).copy()
+                tr2=tr2.slice(tstart,tend).copy()
+                
+                # check if the two traces start and end at the same sample
+                if tr1.stats.starttime != tr2.stats.starttime:
+                    
+                    if interpolate:
+                    
+                        tstart = np.max([tr1.stats.starttime,tr2.stats.starttime])
+                        tr1.interpolate(tr1.stats.sampling_rate,starttime=tstart)
+                        tr2.interpolate(tr2.stats.sampling_rate,starttime=tstart)
+                        # slice again
+                        tend = np.min([tr1.stats.endtime,tr2.stats.endtime])
+                        if tend < tstart + min_overlap:
+                            continue
+                        tr1 = tr1.slice(starttime=tstart,endtime=tend)
+                        tr2 = tr2.slice(starttime=tstart,endtime=tend)
+                        
+                    else:
+                        print("Warning: traces in stream have a subsample " +
+                              "time shift. This can be corrected for with " +
+                              "the option interpolate=True.")
+                    
+                st1_out += tr1
+                st2_out += tr2
+
+
+    if len(st1_out)==0:
+        print("Warning: No common time range")
+        
+    return st1_out,st2_out
+        
 
 
 def freq_to_time_domain(spectrum,f):
@@ -114,8 +181,6 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
     The streams are cut to a common time range and sliced into windows of
     length 'window_length' [s]. The windows are correlated in the frequency 
     domain with an overlap of 'overlap'.\n
-    If there is a sub-sample time shift between the traces, it is automatically
-    corrected for in the end.\n
     The traces can be tapered and normalized beforehand. The cos taper is
     applied to the beginning and ending 'taper_width' percent of each window
     in the time domain. Spectral whitening divides each spectrum by its
@@ -146,26 +211,27 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
         from the end.
     
     :rtype: :class:`~numpy.ndarray`
-    :return: **freq, corr_spectrum** - The frequency axis and the stacked
-        cross-correlation spectrum
+    :return: **freq, corr_spectrum, nwins** - The frequency axis, the stacked
+        cross-correlation spectrum and the number of windows used for stacking.
     """
+    if ( np.isnan(trace1.data).any() or np.isnan(trace2.data).any() or
+         np.isinf(trace1.data).any() or np.isinf(trace2.data).any() ):
+        raise Exception("input traces for noisecorr must not contain nan/inf values!")
+    if np.std(trace1.data)==0.:
+        print("Warning: trace1 is flat!")
+    if np.std(trace2.data)==0.:
+        print("Warning: trace2 is flat!")
+    
     st1,st2=adapt_timespan(Stream(trace1),Stream(trace2))
     tr1=st1[0]
     tr2=st2[0]
-    if (tr1.stats.endtime - tr1.stats.starttime) < window_length:
-        raise Exception('Common time range of traces shorter than window \
-                         length.')
+    if ((tr1.stats.endtime - tr1.stats.starttime) < window_length or
+        (tr2.stats.endtime - tr2.stats.starttime) < window_length):
+        raise Exception('Common time range of traces shorter than window length.')
     if tr1.stats.sampling_rate==tr2.stats.sampling_rate:
         dt=1./tr1.stats.sampling_rate
     else:
-        raise Exception('Both input streams should have the same sampling \
-                         rate!')
-                         
-    # check for time shifts that should be corrected for in the end
-    time_shift = tr1.stats.starttime - tr2.stats.starttime
-    # if trace1 starts later, the time_shift is positive. With the formula 
-    # below this will result in a shift of the CC function in negative direction.
-    # this should be the correct behaviour
+        raise Exception('Both input streams should have the same sampling rate!')
                          
     win_samples=int(window_length/dt)
     data1 = tr1.data
@@ -177,11 +243,17 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
         taper = cosine_taper(win_samples,p=taper_width)     
 
     # loop for all time windows
+    cnt = 0
     for i in range(no_windows):
         window0=int(i*(1-overlap)*win_samples)
         window1=window0+win_samples
         d1=data1[window0:window1]
         d2=data2[window0:window1]
+        if len(d1)!=len(d2):
+            if i==0:
+                raise Exception("common time range shorter than window length!")
+            else:
+                continue
         d1 = detrend(d1,type='constant')
         d2 = detrend(d2,type='constant')
         
@@ -207,28 +279,35 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
         # actual correlation in the frequency domain
         CORR=np.conj(D1)*D2
         
-        # correct for time shift
-        if time_shift != 0.:
-            CORR *= np.exp(1j*2*np.pi*time_shift)
+        if np.isnan(CORR).any() or np.isinf(CORR).any():
+            raise Exception("nan/inf value in correlation!")
+            
+        if np.std(CORR)==0:
+            continue
 
         # summing all time windows
         if i==0:
             SUMCORR=CORR
         else:
             SUMCORR+=CORR
+            
+        cnt += 1
     
-    #freq=freq[(freq>freqmin) & (freq<=freqmax)]
-    SUMCORR /= float(no_windows)
-    return freq, SUMCORR
+    if cnt > 0:
+        #freq=freq[(freq>freqmin) & (freq<=freqmax)]
+        return freq, SUMCORR/cnt, cnt
+    else:
+        raise Exception("cross correlation calculation failed.")
 
 
 def velocity_filter(freq,corr_spectrum,interstation_distance,cmin=1.0,cmax=5.0,
                     return_all=False):
     """
-    Returns the velocity-filtered cross-correlation spectrum (idea from Sadeghisorkhani).
-    Filter is applied in the time domain after inverse FFT. Signals slower than cmin and faster than
-    cmax are set to zero. The filter window is cosine-tapered. This filter can improve the SNR
-    significantly.
+    Returns the velocity-filtered cross-correlation spectrum (idea from 
+    Sadeghisorkhani). Filter is applied in the time domain after inverse FFT. 
+    Signals slower than cmin and faster than cmax are set to zero. The filter 
+    window is cosine-tapered. This filter can improve the SNR significantly.
+    This filter is zero-phase because it is symmetric in the time domain.
 
     :type freq: :class:`~numpy.ndarray`
     :param freq: Frequency axis corresponding to corr_spectrum.
@@ -464,6 +543,7 @@ def extract_phase_velocity(frequencies,corr_spectrum,interstation_distance,ref_c
     pick=[]
     old_picks = []
     #ref_vel_picks=[]
+    previous_freq = None
     picking_errors=0
     i = 0
     while i < len(w_axis):
@@ -527,7 +607,7 @@ def extract_phase_velocity(frequencies,corr_spectrum,interstation_distance,ref_c
             
             #check the first few picks to estimate the data quality
             start_picks = np.array([])
-            idxmax = np.int(np.ceil(((np.max(w_axis)-np.min(w_axis))*0.05)/(ref_vel/(2*delta))))
+            idxmax = int(np.ceil(((np.max(w_axis)-np.min(w_axis))*0.05)/(ref_vel/(2*delta))))
             if idxmax<3:
                 idxmax=3
             if idxmax>6:
@@ -613,7 +693,7 @@ def extract_phase_velocity(frequencies,corr_spectrum,interstation_distance,ref_c
                         print("Break criterium: Too many jumped crossings.")
                     break
 # # # # # # predict the next crossing's velocity from linear extrapolation # # # # # # # # # # # # # #
-            npicks = np.int(np.ceil(((np.max(w_axis)-np.min(w_axis))*0.05)/freq_step)) #no of picks for slope determination
+            npicks = int(np.ceil(((np.max(w_axis)-np.min(w_axis))*0.05)/freq_step)) #no of picks for slope determination
             # no of picks corresponds to 5% of the freq axis
             if npicks<3:
                 npicks = 3
@@ -807,12 +887,12 @@ def extract_phase_velocity(frequencies,corr_spectrum,interstation_distance,ref_c
         
         
  #%%###################################################################
-def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
-                        freqmin=0.0,freqmax=99.0, min_vel=1.0, max_vel=5.0,\
-                        filt_width=4,filt_height=0.5,x_step=0.5,\
-                        pick_threshold=1.7,distortion = 0.0001,\
-                        horizontal_polarization=False, smooth_spectrum=False,\
-                        plotting=False):
+def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
+                  freqmin=0.0,freqmax=99.0, min_vel=1.0, max_vel=5.0,
+                  filt_width=4,filt_height=0.8,x_step=None,
+                  pick_threshold=2.,
+                  horizontal_polarization=False, smooth_spectrum=False,
+                  plotting=False):
     """
     Function for picking the phase velocity curve from the zero crossings of
     the frequency-domain representation of the stacked cross correlation.\n
@@ -820,12 +900,14 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
     crossings and assigning a weight according to the distance from the center
     of the zero crossing to the ellipse boundary. The weights are then stacked
     in the phase-velocity - frequency plot and a smoothed version of the zero-
-    crossing branches is obtained. This procedure reduces the influence of
-    spurious zero crossings due to data noise, makes it easier to identify the
-    well constrained parts of the phase-velocity curve and to obtain a smooth 
-    dispersion curve. A reference dispersion curve must be given to guide the
-    algorithm in finding the correct phase-velocity branch to start the picking,
-    because parallel branches are subject to a 2 pi ambiguity.
+    crossing branches is obtained. Because of the similarity to a kernel-
+    density estimate, the elliptical shapes are called kernels in this code.
+    This procedure reduces the influence of spurious zero crossings due to data
+    noise, makes it easier to identify the well constrained parts of the phase-
+    velocity curve and to obtain a smooth dispersion curve. A reference 
+    dispersion curve must be given to guide the algorithm in finding the 
+    correct phase-velocity branch to start the picking, because parallel 
+    branches are subject to a 2 pi ambiguity.
     
     :type frequencies: :class:`~numpy.ndarray`
     :param frequencies: 1-D array containing frequency samples of the CC spectrum.
@@ -854,12 +936,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
     :type x_step: float
     :param x_step: Controls the step width for the picking routine along the
         x (frequency) axis, in fractions of the expected step width between
-        two zero crossings. Should be smaller than 1.   
-    :type distortion: float
-    :param distortion: The ellipses around each zero crossing are drawn in a
-        strongly distorted coordinate system that overcompensates the effect of
-        the very different units of x (frequency) and y (phase velocity) axis.
-        The distortion stabilizes the shape of the ellipses. 
+        two zero crossings. Is chosen automatically if not set.   
     :type horizontal_polarization: bool
     :param horizontal_polarization: When ``True``, the zero crossings from the spectrum are
         compared to the difference function J0 - J2 (Bessel functions of the
@@ -885,452 +962,927 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
     freqmax=1./min_period
     min_vel=min_vel
     max_vel=max_vel
-    filt_width=3
-    filt_height=0.5
-    x_step=0.5
+    filt_width=4
+    filt_height=0.8
     pick_threshold=pick_thresh
     horizontal_polarization=horizontal_polarization
     smooth_spectrum=False
     plotting=True
-    distortion = 0.0001
-    """  
+    """
+    
+    
+    def dv_cycle_jump(frequency,velocity,interstation_distance):
+        
+        return np.abs(velocity-1./(1./(interstation_distance*frequency) + 
+                                   1./velocity))
+    
+     
+    def get_slope(picks,freq, x_step,
+                  reference_curve_func, verbose=False):
+        """
+        function to determine a slope estimate for the picked dispersion curve
+        it tries to automatically weight between the slope of the reference
+        curve and that of the previous picks. The slope is used to make a
+        prediction where the next zero crossing is expected.
+        
+        freq: frequency (x-axis) where the slope shall be determined
+        picks: previous picks
+        reference_curve_function: interpolation function for the ref curve
+        """
+        
+        # number of picks to use for prediction
+        npicks = np.max([3,int(3/x_step)])
+        
+        # slope of the reference curve
+        slope_ref = ((reference_curve_func(freq+0.01) - 
+                      reference_curve_func(freq-0.01))/0.02)        
+                 
+        # slope and intercept of previous picks
+        if len(picks)>npicks: # picks for prediction  
+            curveslope, intercept, r_value, p_value, std_err = \
+                linregress(np.array(picks)[-npicks:,0],
+                            np.array(picks)[-npicks:,1])
+        else:
+            curveslope = slope_ref
+           
+        # compare to the slopes between the previous picks
+        if len(picks) > 3:
+            slope_history = np.diff(np.array(picks),axis=0)
+            slope_history = slope_history[:,1]/slope_history[:,0]           
+            # trying to predict how the slope is changing from previous steps
+            average_slope_change = np.mean(np.diff(slope_history[-10:]))
+            slope_pred = np.mean(slope_history[-10:]) + average_slope_change
+        else: 
+            slope_history = []
+            slope_pred = slope_ref
+            
+        # the final slope is a weighted average between the slope predicted
+        # from the previous slopes, the slope from the linear fit to the
+        # previous picks and the slope of the reference curve
+        slope = 0.4*slope_pred + 0.4*curveslope + 0.2*slope_ref
+        
+        if len(slope_history) > 3:
+            # check whether slope is getting steeper with increasing frequency
+            # if yes, make it closer to the reference slope
+            if np.abs(slope) > np.mean(np.abs(slope_history[-3:])):
+                slope = np.mean(slope_history[-3:])
 
-    crossings = get_zero_crossings(frequencies,corr_spectrum,interstation_distance,
-                                   freqmin=freqmin,freqmax=freqmax,min_vel=min_vel,max_vel=max_vel,
-                                   horizontal_polarization=horizontal_polarization,smooth_spectrum=smooth_spectrum)
-    copycrossings = crossings.copy()
-    delta=interstation_distance
-    w_axis=np.unique(crossings[:,0])
-    w_axis=w_axis[(np.min(ref_curve[:,0])<w_axis)*(w_axis<np.max(ref_curve[:,0]))]    
-    cross={}
-    for w in w_axis:
-        cross[w] = crossings[:,1][crossings[:,0] == w]    
+        # make sure that the slope is negative (lower velocities with
+        # increasing frequency
+        if slope > 0 or np.isnan(slope):
+            slope=0.
+
+        return slope
+        
+
+    def get_zero_crossing_slopes(crossings,freq,reference_velocity,slope,width,
+                                 reference_curve_func,interstation_distance):
+        """
+        This function attributes a slope to each zero crossing. The slopes are
+        chosen such that they point in the direction of adjacent zero crossings
+        """
+           
+        crossfreq,uniqueidx = np.unique(crossings[:,0],return_inverse=True)
+        freq_idx = np.where(crossfreq==freq)[0]
+        cross_idx = np.where(uniqueidx==freq_idx)[0]
+        cross = crossings[cross_idx]
+        
+        # slope of the reference curve
+        slope_ref = ((reference_curve_func(freq+0.01) - 
+                      reference_curve_func(freq-0.01))/0.02)
+        fstep = reference_velocity/(2*interstation_distance)
+        dvcycle = dv_cycle_jump(freq,reference_velocity,interstation_distance)
+
+        # first, find the best-fitting slope for the zero crossing wich is
+        # closest to the reference velocity
+        closest_idx = np.abs(cross[:,1] - reference_velocity).argmin()
+        vel = cross[closest_idx,1]
+
+        if slope is None:
+            slope = slope_ref
+
+        # test a couple of different slopes that may vary between the last
+        # slope minus 0.3 cycle jumps and zero 
+        test_slopes = np.arange(slope-0.3*dvcycle/(width/2.*fstep),0,1)
+    
+        if len(test_slopes)==0:
+            test_slopes = [0.]
+
+        # loop through all the test slopes and check the clostest distances
+        # from a line with the given slope to the next crossings
+        dists = np.zeros_like(test_slopes)
+        # putting more weight on the next/future crossings
+        freqax = np.unique(crossfreq[(crossfreq<=freq+width/2.*fstep)*(crossfreq>=freq)])
+        for i,test_slope in enumerate(test_slopes):
+            
+            v_predicted = vel+test_slope*(freqax-freq)
+            
+            v_distance = 0.
+            for f,v in np.column_stack((freqax,v_predicted)):
+                cross_v = crossings[crossings[:,0]==f,1]
+                if (cross_v>v).all() or (cross_v<v).all():
+                    continue
+                v_distance += np.min(np.abs(v-cross_v))
+            
+            dists[i] = v_distance
+
+        best_slope = test_slopes[dists.argmin()]
+
+        if best_slope>0:
+            best_slope=0.
+        
+        # for all the other zero crossings, we model the slope from the
+        # 'best_slope'.
+        cycle_count = (cross[:,1]-vel)/dvcycle
+
+        dvcycle1 = dv_cycle_jump(freq-width/2.*fstep,reference_velocity,
+                                  interstation_distance)
+        dvcycle2 = dv_cycle_jump(freq+width/2.*fstep,reference_velocity,
+                                  interstation_distance)
+        
+        dv = ((vel+cycle_count*dvcycle2) - 
+              (vel+cycle_count*dvcycle1))
+        cross_slopes = dv/(width/2.*fstep) + best_slope
+        
+        maxslope = (0.5*dv_cycle_jump(freq,cross[:,1],interstation_distance) / 
+                    (width/2.*fstep))
+        mod_idx = np.abs(cross_slopes) > np.abs(maxslope)
+        cross_slopes[mod_idx] = maxslope[mod_idx]*np.sign(cross_slopes[mod_idx])
+        
+        # avoid steep slopes. this has most effect on the branches far away
+        # from the reference velocity
+        cross_slopes *= 0.5
+        
+        # at the main branch, set the previously determined optimal slope
+        cross_slopes[closest_idx] = best_slope
+
+        return cross_slopes, cross_idx, vel
+ 
+    
+    def get_kernel(X,Y,freq,vel,slope,interstation_distance,
+                   fstep,filt_width,filt_height,
+                   return_poly_coords=False,return_weights=False):
+        """
+        X,Y: background grid (not regular)
+        freq: central_frequency (x-axis) around which the kernel is drawn
+        vel: central velocity (y-axis) around which the kernel is drawn
+        slope: slope of the elliptically shaped kernel
+        
+        Description
+        function to determine the elliptical kernels around each zero crossing.
+        similar to a kernel density estimate (KDE) method, an ellipse is
+        drawn around each zero crossing having a weight of 1 at the location
+        of the zero crossing which decreases to 0 at its border.
+        the phase velocity pick is taken where the weight of the overlapping
+        elliptical kernels is maximum which gives smoother picks as compared
+        to picking the (noisy) zero crossings directly.
+        Shape and size of the elliptical kernels is user determined
+        
+        """
+        
+        # the width of the elliptical kernel
+        width = fstep*filt_width
+        # sample the ellipse at the frequencies where X has sample points
+        freqax = np.unique(X[(X<=freq+width/2.)*(X>=freq-width/2.)])
+        # along the frequency axis, the weights are 1 at the zero crossing
+        # and decrease to 0 towards the edges of the freqax
+        xweights = np.sqrt(np.abs(np.cos((freq-freqax)/(width/2.)*np.pi/2.)))
+        # predicted velocities along the frequency axis
+        v_predicted = vel+slope*(freqax-freq)
+        # predicted distance between cycles along the frequency axis
+        dv_cycle = dv_cycle_jump(freqax,v_predicted,interstation_distance)
+        # the height of the ellipse is maximum around the zero crossing
+        # and decreases to zero towards the edges of the freqax
+        heights = dv_cycle*filt_height*xweights
+        
+        boundary_coords = None
+        if return_poly_coords:
+            # boundary points of the polygon patch
+            fax_bound = np.linspace(freq-width/2.,freq+width/2.,20)
+            xweights_bound = np.sqrt(np.abs(np.cos((freq-fax_bound)/(width/2.)*np.pi/2.)))
+            v_predicted_bound = vel+slope*(fax_bound-freq)
+            dv_cycle_bound = dv_cycle_jump(fax_bound,v_predicted_bound,
+                                           interstation_distance)
+            heights_bound = dv_cycle_bound*filt_height*xweights_bound
+            boundary_coords = np.vstack((
+                np.column_stack((fax_bound,v_predicted_bound+heights_bound/2.)),
+                np.column_stack((fax_bound,v_predicted_bound-heights_bound/2.))[::-1],
+                np.array([fax_bound[0],v_predicted_bound[0]+heights_bound[0]/2.])))
+
+            
+            
+            # boundary_coords = np.vstack((
+            #     np.array([[freq-width/2.,vel-slope*width/2. - heights[0]/4.],
+            #                #dv_cycle[0]*filt_height*np.cos(np.pi/2.1)],
+            #               [freq-width/2.,vel-slope*width/2. + heights[0]/4.]]),
+            #                #dv_cycle[0]*filt_height*np.cos(np.pi/2.1)]]),
+            #     np.column_stack((freqax,v_predicted+heights/2.)),
+            #     np.array([[freq+width/2.,vel+slope*width/2. + heights[-1]/4.],
+            #     #           dv_cycle[-1]*filt_height*np.cos(np.pi/2.1)],
+            #               [freq+width/2.,vel+slope*width/2. - heights[-1]/4.]]),
+            #     #           dv_cycle[-1]*filt_height*np.cos(np.pi/2.1)]]),
+            #     np.column_stack((freqax,v_predicted-heights/2.))[::-1],
+            #     #np.array([freqax[0],v_predicted[0]+heights[0]/2.])))
+            #     #np.array([freq-width/2.,vel-slope*width/2. - 
+            #     #           dv_cycle[0]*filt_height*np.cos(np.pi/2.1)])))
+            #     np.array([freq-width/2.,vel-slope*width/2. - heights[0]/4.])))
+                    
+        poly_weight_ind = np.empty((0,),dtype=int)
+        poly_weights = np.empty((0,))
+        if return_weights:
+            # loop over all frequencies along the freqax and get the weights
+            for f_ind,f in enumerate(freqax):
+                x_ind = np.where(X==f)[0]
+                y = (Y[x_ind]-v_predicted[f_ind])/(heights[f_ind]/2.)
+                y_ind = np.where(np.abs(y)<1.)[0]
+                yweights = np.zeros(len(y))
+                yweights[y_ind] = np.cos(y*np.pi/2.)[y_ind] * xweights[f_ind]
+                poly_weight_ind = np.append(poly_weight_ind,x_ind)
+                poly_weights = np.append(poly_weights,yweights)
+                
+        return boundary_coords,poly_weight_ind,poly_weights
+        
+   
+        
+    def update_density_field(X,Y,density,crossings,fstep,
+                             filt_width,filt_height,
+                             interstation_distance,
+                             distortion=None,idx_plot=[]):
+        
+        ellipse_paths = []
+        
+        # add the weights to the density field for every zero crossing
+        for j,(freq,vel,slope) in enumerate(crossings):
+                  
+            if j in idx_plot:
+                return_poly_coords = True
+            else:
+                return_poly_coords = False
+                
+            poly_coords, poly_weight_ind, poly_weights = get_kernel(
+                    X,Y,freq,vel,slope,interstation_distance,
+                    fstep,filt_width,filt_height,
+                    return_poly_coords=return_poly_coords,
+                    return_weights=True)
+            
+            density[poly_weight_ind] += poly_weights
+                
+            if j in idx_plot:
+                ellipse_paths.append(poly_coords)
+
+        return density, ellipse_paths
+
+            # Alternative approach, using a rotated ellipse
+            # needs a coordinate distortion
+            # if np.abs(slope)*width/2.>height:
+            #     width = height/np.abs(slope)*2 
+                
+            # height *= distortion                                
+            
+            # # The ellipse
+            # angle = np.degrees(np.arctan(slope*distortion))
+            # #angle=0.
+            # cos_angle = np.cos(np.radians(angle))
+            # sin_angle = np.sin(np.radians(angle))                                
+            
+            # g_ell_center = (freq,vel*distortion)
+            # g_ell_width = np.abs(cos_angle)*width + np.abs(sin_angle)*height
+            # g_ell_height = np.abs(cos_angle)*height# + 0.1*np.abs(sin_angle)*width
+                
+            # cos_angle = np.cos(np.radians(180.-angle))
+            # sin_angle = np.sin(np.radians(180.-angle))
+            
+            # xc = X - g_ell_center[0]
+            # yc = Y*distortion - g_ell_center[1]
+            
+            # xct = xc * cos_angle - yc * sin_angle
+            # yct = xc * sin_angle + yc * cos_angle 
+            
+            #rad_cc = (xct**2/(g_ell_width/2.)**2) + (yct**2/(g_ell_height/2.)**2)
+    
+            #weights[rad_cc <= 1] += np.cos(np.pi/2.*rad_cc[rad_cc<=1])
+            
+                # # get the polygon vertices for plotting
+                # # create polygon
+                # poly = patches.Polygon(poly_coords,closed=True)
+                # # Get the path
+                # path = poly.get_path()
+                # # Get the list of path vertices
+                # vertices = path.vertices.copy()
+                # # Transform the vertices so that they have the correct coordinates
+                # vertices = poly.get_patch_transform().transform(vertices)
+                # #vertices[:,1]/=distortion
+                # ellipse_paths.append(vertices)            
+                
+
+    def check_previous_picks(picks,picks_backup,frequency,slope,minvel,maxvel,
+                             reference_curve_func,freqax_picks,
+                             interstation_distance,verbose=False):
+        
+        # QUALITY CHECKING PREVIOUS PICKS        
+        npicks_jumped = 0
+        
+        # number of picks to use for prediction
+        no_test_picks = np.max([3,int(3/x_step)])
+        
+        # CHECK 1: IS THERE A CYCLE JUMP BETWEEN THE LAST PICK AND THE ONE THREE CYCLES BEFORE?
+        if len(picks) > no_test_picks:
+            
+            ref_dv = reference_curve_func(picks[-1][0]) - reference_curve_func(picks[-no_test_picks][0])
+            
+            pickarray = np.array(picks)
+            slope_history = np.diff(pickarray,axis=0)
+            slope_history = slope_history[:,1]/slope_history[:,0]
+            testslope = np.mean(slope_history[-no_test_picks-5:-no_test_picks+1])
+                        
+            testpicks = pickarray[-no_test_picks:]
+            dfreq,dv = testpicks[-1] - testpicks[0]
+            dv_cycle = np.mean([dv_cycle_jump(testpicks[-1,0],testpicks[-1,1],interstation_distance),
+                                dv_cycle_jump(testpicks[0,0],testpicks[0,1],interstation_distance)])
+            
+            allowed_vel_reduction = -0.6*dv_cycle + np.min([
+                testslope*(picks[-1][0]-picks[-no_test_picks][0]),
+                ref_dv])
+            
+            allowed_vel_increase = 0.6*dv_cycle + slope*(picks[-1][0]-picks[-no_test_picks][0])
+            dv_max = np.max([np.max(pickarray[:,1])-np.min(pickarray[:,1]),
+                             np.abs(ref_dv),dv_cycle,(maxvel-minvel)/4.])
+            
+            # jumps to lower velocities
+            if dv < allowed_vel_reduction and dv < 0.:
+                if verbose:
+                    print("    %.3f: cycle jump to lower velocities detected" 
+                          %frequency)
+                    print("      last pick:",picks[-1])
+                    print("      pick before:",picks[-no_test_picks])
+                    print("      removing the last picks")
+                for i in range(int(no_test_picks/3)):
+                    picks.remove(picks[-1])
+            
+            # jumps to higher velocities are more likely to get punished   
+            elif (dv > allowed_vel_increase or dv > 0.2*dv_max) and dv > 0.:
+                if verbose:
+                    print("    %.3f: cycle jump to higher velocities detected" 
+                          %frequency)
+                    print("      last pick:",picks[-1])
+                    print("      pick before:",picks[-no_test_picks])
+                    print("      removing the last picks")  
+                for i in range(int(no_test_picks/3)):
+                    picks.remove(picks[-1])
+          
+        # CHECK 2: COUNT HOW MANY PICKS WERE NOT MADE.
+        if len(picks) > 0:
+            idx0 = np.where(picks[0][0]==freqax_picks)[0][0]
+            idxpick = np.where(frequency==freqax_picks)[0][0]
+            total_picks_jumped = len(freqax_picks[idx0:idxpick]) - len(picks)
+            # if the total number of jumped picks is too large, abort
+            if ((total_picks_jumped > no_test_picks) or 
+                (total_picks_jumped > no_test_picks/3. and len(picks) < no_test_picks)):
+                if verbose:
+                    print("    %.3f: %d picks were not made, data quality too poor." 
+                          %(frequency,total_picks_jumped))
+                    print("    restarting")
+                if len(picks_backup)<len(picks):
+                    picks_backup = picks # save a copy of "bad" picks
+                picks = []
+                return picks,picks_backup,slope,npicks_jumped      
+
+        return picks,picks_backup,slope,npicks_jumped
+        
+    
+    
+    def pick_velocity(picks,frequency,densities,slope,x_step,minvel,maxvel,
+                      dvcycle,reference_curve_func,pick_threshold,
+                      no_start_picks=3,verbose=False):
+        """
+        Function to add a new phase-velocity pick to the picks list.       
+        
+        Parameters
+        ----------
+        picks : TYPE
+            List of picked phase velocities, new pick will be appended to
+            that list.
+        frequency : TYPE
+            Frequency at which the next pick will be made.
+        densities : TYPE
+            Array containing the result of the kernel densities.
+        slope : TYPE
+            Slope is used to predict the velocity of the next pick.
+        x_step : TYPE
+            x_step gives the stepsize between two adjacent picks relative to
+            the step between two zero crossings.
+        dvcycle : TYPE
+            Expected velocity difference between two adjacent cycles.
+        reference_curve_func : TYPE
+            Function that returns the velocity of the reference curve at a
+            given frequency.
+        pick_threshold : TYPE
+            Picks are only made at density maxima if the maximum is larger
+            than pick_threshold times the adjacent minimum.
+        no_start_picks : int, optional
+            Number of 'first picks' for which more strict picking criteria
+            apply. The default is 3.
+        verbose : TYPE, optional
+            Switch verbose to True or False. The default is False.
+
+        Returns
+        -------
+        picks : TYPE
+            List of picks.
+
+        """
+
+        if len(picks)<=no_start_picks:
+            # higher pick threshold for the first few picks
+            thresh_factor = 1.25
+            pick_threshold *= thresh_factor
+        else:
+            thresh_factor = 1.
+        
+        velocities, weights = densities
+        
+        # picks are made where there is a maximum in the density array
+        idxmax = find_peaks(weights)[0] #all indices of maxima 
+        if len(idxmax)==0:
+            return picks
+        # don't pick anything, if there are only maxima below the reference 
+        # curve, unless the velocity difference is less than 10%
+        if np.max(velocities[idxmax]) < 0.9*reference_curve_func(frequency):
+            return picks
+        
+        no_start_picks /= x_step
+        
+        # if there are previous picks, try to predict the next pick
+        if len(picks)>=no_start_picks:
+            dv_ref = reference_curve_func(frequency)-reference_curve_func(picks[-1][0])
+            dv_predicted = slope*(frequency-picks[-1][0])
+            v_predicted = picks[-1][1]+dv_predicted
+        # otherwise take the reference velocity as prediction
+        elif len(picks)>=1:
+            dv_ref = reference_curve_func(frequency)-reference_curve_func(picks[-1][0])
+            dv_predicted = 0.
+            #if len(picks)<no_start_picks:
+            #    v_predicted = reference_curve_func(frequency)
+            #else:
+            v_predicted = picks[-1][1]+dv_ref
+        else:
+            v_predicted = reference_curve_func(frequency)
+                
+        idxpick1 = idxmax[np.abs(velocities[idxmax]-v_predicted).argmin()] #index of closest maximum
+        vpick = velocities[idxpick1]
+
+        # check also the second closest maximum and make sure that the two 
+        # maxima are well separated so that the pick is not ambiguous
+        if len(idxmax)>1:
+            idxpick2 = idxmax[np.abs(velocities[idxmax]-v_predicted).argsort()[1]] # index of 2nd closest maximum
+            vpick2 = velocities[idxpick2]
+            
+            if (np.abs((vpick2-v_predicted)/(vpick-v_predicted)) < 1.5 or
+                np.abs(vpick2-vpick) < 0.4*dvcycle or
+                np.abs(vpick2-vpick) > 2.5*dvcycle):
+                if verbose:
+                    if np.abs(vpick2-vpick) > 2.5*dvcycle:
+                        print("    %.3f: branches are too far apart to get a good pick" %(frequency))
+                    else:
+                        print("    %.3f: branches are too close to get a good pick" %(frequency))
+                        print("        pick1=%.3f pick2=%.3f pick_predicted=%.3f slope=%.3f" 
+                              %(vpick,vpick2,v_predicted,slope))
+                    return picks
+        
+        # check the weights at the maximum
+        maxamp = weights[idxpick1]
+        
+        # and the weights at the adjacent minima
+        idxmin = find_peaks(weights*-1)[0]
+        # if there are no minima
+        minamp1 = minamp2 = np.min(weights[(velocities>vpick-dvcycle)*
+                                           (velocities<vpick+dvcycle)])
+        # if there are minima overwrite minamp1 and minamp2
+        if len(idxmin)>0:
+            # if there is no minimum above
+            if (idxpick1>idxmin).all():
+                minamp2 = weights[idxmin[-1]]
+            # if there is no minimum below
+            elif (idxpick1<idxmin).all():
+                minamp1 = weights[idxmin[0]]
+            else:
+                minamp1 = weights[idxmin[idxmin>idxpick1][0]]
+                minamp2 = weights[idxmin[idxmin<idxpick1][-1]]
+        minamp = np.mean([minamp1,minamp2])
+    
+        
+        if maxamp > pick_threshold * minamp and maxamp > 0.5*np.max(weights):
+            
+            if len(picks)>0:
+            
+                # quality checking current pick
+                maximum_allowed_velocity_reduction = (
+                    -0.3*dvcycle + np.min([dv_ref, dv_predicted]) )
+                maximum_allowed_velocity_increase = ( 
+                     0.3*dvcycle + np.max([dv_ref, dv_predicted]) )
+                                    
+                maximum_allowed_velocity_reduction = np.min([
+                    -(maxvel-minvel)/100.,maximum_allowed_velocity_reduction])
+                maximum_allowed_velocity_increase = np.max([
+                    (maxvel-minvel)/100.,maximum_allowed_velocity_increase])
+                
+                if len(picks) <= no_start_picks and frequency < 1./30:
+                    # at long periods, increasing velocities are very unlikely
+                    maximum_allowed_velocity_increase *= 0.05
+                
+                
+                if vpick-picks[-1][1] < maximum_allowed_velocity_reduction:
+                    if verbose:
+                        print("    %.3f: velocityjump to lower velocities too large" %frequency)
+                        print("      veljump: %.2f; allowed jump: %.2f" %(vpick-picks[-1][1],
+                                                    maximum_allowed_velocity_reduction))
+                        print("      slope:",slope)
+                        print("      last pick:",picks[-1])
+                    return picks
+                
+                if vpick-picks[-1][1] > maximum_allowed_velocity_increase:
+                    if verbose:
+                        print("    %.3f: velocityjump to higher velocities too large" %frequency)
+                        print("      veljump: %.2f; allowed jump: %.2f" %(vpick-picks[-1][1],
+                                                    maximum_allowed_velocity_increase))
+                    return picks
+            
+            picks.append([frequency,vpick])
+       
+        else:
+            if verbose:
+                print("    %.3f: amplitude of maximum too low, no pick taken" %frequency)
+                print("      maxamp=%.2f minamp=%.2f vpick=%.2f" %(maxamp,minamp,vpick))
+            
+        return picks
+        
+        
+    #%% # # # # # # # # # # 
+    # Main function
+        
+    # get the zero crossings of the cross correlation spectrum
+    zero_crossings = get_zero_crossings(
+        frequencies,corr_spectrum,interstation_distance,
+        freqmin=freqmin,freqmax=freqmax,min_vel=min_vel,max_vel=max_vel,
+        horizontal_polarization=horizontal_polarization,
+        smooth_spectrum=smooth_spectrum)
+    w_axis,uniqueidx = np.unique(zero_crossings[:,0],return_inverse=True)
+    w_axis=w_axis[(np.min(ref_curve[:,0])<w_axis)*(w_axis<np.max(ref_curve[:,0]))] 
+    maxfreq = np.max(w_axis)
+    crossings=np.column_stack((zero_crossings,np.zeros(len(zero_crossings))))
+
+    # create a logarithmically spaced frequency axis. Final picks are inter-
+    # polated and smoothed on this axis.
+    npts = 2
+    f_max = np.max(ref_curve[:,0])
+    f_min = np.min(ref_curve[:,0])
+    while True:
+        if 1.05**npts * f_min > f_max:
+            break
+        npts += 1
+    logspaced_frequencies = np.logspace(np.log10(f_min),np.log10(f_max),npts)
+    df = np.abs(logspaced_frequencies[1]-logspaced_frequencies[0])
+    if df>1:
+        n_round = 1
+    else:
+        n_round = int(np.abs(np.log10(df))) + 2
+    logspaced_frequencies = np.around(logspaced_frequencies,n_round)
+    
+    # cut the logspaced_frequencies to the range where there are crossings
+    valid_range = np.where((logspaced_frequencies > np.min(w_axis))*
+                           (logspaced_frequencies < np.max(w_axis)))[0]
+    idx0 = valid_range[0]
+    idx1 = np.min([valid_range[-1]+2,len(logspaced_frequencies)])
+    logspaced_frequencies = logspaced_frequencies[idx0:idx1]
+    
+    if x_step is None:
+        x_step = np.around(len(w_axis)/np.sum((ref_curve[:,0]>np.min(w_axis))*
+                                               (ref_curve[:,0]<np.max(w_axis))),1)
+        x_step = np.min([x_step,0.9])
+        x_step = np.max([x_step,0.2])
+    
+    # interpolation function for the reference curve
     try:
-        func=interp1d(ref_curve[:,0],ref_curve[:,1],bounds_error=False,fill_value='extrapolate')
+        reference_curve_func = interp1d(ref_curve[:,0],ref_curve[:,1],
+                                        bounds_error=False,
+                                        fill_value='extrapolate')
     except:
-        raise Exception("Error: please make sure that you are using the latest version of SciPy (>1.0).")
+        raise Exception("Error: please make sure that you are using the "+
+                        "latest version of SciPy (>1.0).")
 
-    three_freq_step = np.int(3/x_step)
+
+    if plotting:
+        print("  starting picking (x-step = %.1f)" %x_step)
     picks = []
     picks_backup=[]
-
-#%%
-    picks = []
-    freq = np.min(w_axis)
-    slope_history = np.array([])
     
-    vel_plot_vertice = 0.
-
     X=np.array([])
     Y=np.array([])
-    intensity=np.array([])
-    idx_intens=np.array([])
-
-    cross_freqs,uniqueidx = np.unique(crossings[:,0],return_inverse=True)
+    density=np.array([])
+    
+    sampling = 20
+    slope = None
+    cross_vel = None
     if plotting:
-        ellipse_paths = []    
+        ellipse_paths = []
+      
+    gridaxis = []
+    freq = np.min(w_axis)
+    while freq <= np.max(w_axis):
+        gridaxis.append(freq)
+        freq += x_step*reference_curve_func(freq)/(2*interstation_distance)
+    gridaxis = np.array(gridaxis)
+        
+    # kernel: approximately elliptical shape drawn around each zero crossing
+    # that assigns a weight which is maximum at the center of the ellipse
+    # (where the zero crossing is) and decreases to 0 towards the border of
+    # the ellipse. The elliptical kernels are overlapping. Picks are made
+    # where the weight density is maximum.
+
+    # the procedure works with 3 nested loops
+    # INNERMOST LOOP creates new gridpoints at which the kernel density is
+    # evaluated. This has to be done first, before the kernels are calculated
+    # and before the picks are made. This loop advances the fastest along
+    # the frequency axis
+    #freq_gridpoints = np.min(w_axis)
+    idx_gridpoints = 0
+    # INNER LOOP creates the (approximately) elliptical kernels around each
+    # zero crossing. The values of all kernels are evaluated at the gridpoints
+    # and summed to give the density field. This loop runs behind the inner-
+    # most loop
+    idx_kernel = 0
+    # OUTER LOOP runs behind both the inner and the innermost loops. Once the
+    # kernels are evaluated it will pick the phase velocities where the kernel
+    # density field is maximum.
+    #freqax_picks = [np.min(w_axis)]
+    #freq_pick = np.min(w_axis)
+    #idx_pick = 0
+    idx_pick = 0
     
-    # PICKING LOOP OVER THE FREQ AXIS
-    pick_to_the_end=True
-    pick_info = []
-    crossings = copycrossings.copy()
-    col_no = 0
-    while True:
+    ##########################################################################
+    # OUTER LOOP FOR PICKING THE VELOCITIES
+    while idx_pick <= idx_gridpoints and idx_pick < len(gridaxis):
         
-        ref_vel = func(freq)
-        slope_ref = (func(freq+0.01)-func(freq-0.01))/0.02
-        intercept_ref = ref_vel-slope_ref*freq
+        freq_pick = gridaxis[idx_pick]
         
-        freq_step = ref_vel/(2*delta)
+        if freq_pick > maxfreq:
+            if plotting:
+                print("    %.3f: Distance between the next zero crossings " +
+                      "seems to be wrong. Stopping." %freq_pick)
+            break
         
-        if len(picks)<3:
-            dv_cycle=np.abs(ref_vel-1./(1./(delta*freq) + 1./ref_vel)) # velocity jump corresponding to 2pi cycle jump
-        else:
-            dv_cycle=np.abs(picks[-1][1]-1./(1./(delta*freq) + 1./picks[-1][1]))
-           
-        if len(picks)>3:
-            Ypoints = np.arange(np.max((picks[-1][1]-5*dv_cycle,min_vel)),np.min((picks[-1][1]+2*dv_cycle,max_vel)),dv_cycle/20.)
-        else:
-            Ypoints = np.arange(min_vel,max_vel,dv_cycle/20.)
-        Xpoints = np.ones(len(Ypoints))*freq
-        
-        X = np.append(X,Xpoints)
-        Y = np.append(Y,Ypoints)
-        intensity = np.append(intensity,np.zeros(len(Xpoints)))
-        idx_intens = np.append(idx_intens,np.ones(len(Xpoints))*col_no)
-                      
-        
-        pick_to_the_end = False
-        if freq>= np.max(w_axis):
-            if len(pick_info)>0:
-                pick_to_the_end = True
-            else:
+
+        ######################################################################
+        # INNER LOOP TO UPDATE THE KERNEL DENSITY FIELD
+        # the density field must be advanced with respect to the picking loop
+        while idx_kernel < len(w_axis):
+            
+            freq_kernel = w_axis[idx_kernel]            
+            fstep_kernel = reference_curve_func(freq_kernel)/(2*interstation_distance) 
+            
+            if freq_kernel > freq_pick + 0.6*filt_width*fstep_kernel:
                 break
-        elif freq+x_step*freq_step > np.max(w_axis):
-            freq += np.max([np.max(w_axis)-freq,0.001])
-        else:
-            pick_info.append([col_no,freq,freq_step,dv_cycle])
-            col_no += 1
-            freq+=x_step*freq_step
-        
-        # if we have added enough points so that the ellipse will fit completely, start creating ellipses
-        if freq - pick_info[0][1] > 2*filt_width*pick_info[0][2] or pick_to_the_end:           
             
-            cno,fpick,fstep,dvcycle = pick_info.pop(0)
-            yaxis = Y[idx_intens==cno]
+            # if there is more than one zero-crossing gap, abort.
+            if idx_kernel>1 and maxfreq > w_axis[idx_kernel]:
+                if ((w_axis[idx_kernel]-w_axis[idx_kernel-1])/fstep_kernel > 1.5 and
+                    (w_axis[idx_kernel-1]-w_axis[idx_kernel-2])/fstep_kernel > 1.5):
+                    maxfreq = w_axis[idx_kernel]
             
-            cross_idx = np.where(crossings[:,0]<=fpick+fstep*filt_width)[0]
-        
-            values=crossings[cross_idx].copy()
+            kernel_upper_boundary = freq_kernel + filt_width*fstep_kernel
             
-            # slope measurement # # #
-            if len(picks)>int(three_freq_step/2): #1.5 freq steps for prediction  
-                curveslope, intercept, r_value, p_value, std_err = \
-                        linregress(np.array(picks)[-int(three_freq_step/2):,0],np.array(picks)[-int(three_freq_step/2):,1])  
-                if len(slope_history)>1:
-                    slope = 0.5*curveslope + 0.5*np.mean(slope_history[-three_freq_step:])
-                    slope_y = picks[-1][1]
-            else:
-                curveslope = slope_ref
-                intercept = intercept_ref
-                slope_y = func(fpick)
-            if len(picks)>int(three_freq_step):
-                accepted_slope = 0.9
-            else:
-                accepted_slope = 0.7
-            if len(picks)>5 and np.abs(np.arctan(slope) - np.arctan(slope_ref)) > np.pi*accepted_slope: #value is chosen after testing
-                slope = slope_ref
-                if plotting:
-                    print("    freq: %.3f - removing picks because of inconsistent slope (accepted slope: %f)" %(picks[-1][0],accepted_slope))
-                for j in range(int(three_freq_step/4)+1):
-                    picks.remove(picks[-1])
-            else:
-                slope = 0.1*slope_ref + 0.9*curveslope # for window determination
-            if slope>0 or np.isnan(slope):
-                slope=slope_ref
-            if len(slope_history)>0:
-                if slope<np.min(slope_history[-3*three_freq_step:]):
-                    slope = np.min(slope_history[-three_freq_step:])
-            slope_history = np.append(slope_history,slope)             
-            
-            #dvcycle_values1 = np.abs(values[:,1]-1./(delta*(values[:,0]-0.01)) + 1./values[:,1])
-            #dvcycle_values2 = np.abs(values[:,1]-1./(delta*(values[:,0]+0.01)) + 1./values[:,1])
-            dvcycle_before = np.abs(slope_y-1./(1./(delta*(fpick-0.001)) + 1./slope_y))
-            dvcycle_after  = np.abs(slope_y-1./(1./(delta*(fpick+0.001)) + 1./slope_y))
-            cyclecount = (values[:,1]-slope_y)/dvcycle
-            y_before = (values[:,1]-0.001*slope)+cyclecount*dvcycle_before            
-            y_after  = (values[:,1]+0.001*slope)+cyclecount*dvcycle_after
-            relslopes = (y_after-y_before)/0.002
-            relslopes = (relslopes+slope)/2. # downweight the relative slope
-                        
-            crossings = np.delete(crossings,cross_idx,axis=0)
-        
-            if plotting and len(values)>0:
-                if vel_plot_vertice != 0.:
-                    idx_plot = np.abs(values[:,1]-vel_plot_vertice).argmin()
-                elif len(picks)>0:
-                    idx_plot = np.abs(values[:,1]-picks[-1][1]).argmin()
-                else:
-                    idx_plot = np.abs(values[:,1]-ref_vel).argmin()
-                vel_plot_vertice = values[idx_plot,1]
-                idx_plot = [idx_plot-1,idx_plot+1]
+            ##################################################################
+            # INNERMOST LOOP THAT ADDS NEW GRIDPOINTS
+            # the distance between the gridpoints is dependent on the distance
+            # between zero crossings (along x-axis) and on the distance between
+            # adjacent phase-velocity cyles/branches (along y-axis)
+            # new gridpoints at which the density field is computed
+            # the gridpoints have again to be created before the density
+            # field can be computed
+            while (idx_gridpoints < len(gridaxis)):
                 
-            # create a ellipse around each zero crossing and check which points are inside
-            for j,cross in enumerate(values):
-                
-                dv_cycle_cross = np.abs(cross[1]-1./(1./(delta*fpick) + 1./cross[1]))
-                #distortion = cross[1]/(2*delta)/dv_cycle_cross # because x (frequency) and y (velocity) have very different units
-
-                # shape of the ellipse around each zero crossing
-                width = fstep*filt_width
-                height = dv_cycle_cross*filt_height
-                if np.abs(relslopes[j])*width/2.>height:
-                    width = height/np.abs(relslopes[j])*2 
-                    
-                #if np.abs(np.tan(np.arctan(relslopes[j])-np.pi/2))*height < fstep*filt_width:
-                #    height = fstep*filt_width/np.abs(np.tan(np.arctan(relslopes[j])-np.pi/2))
-                height *= distortion                                   
-                
-                # The ellipse
-                angle = np.degrees(np.arctan(relslopes[j]*distortion))
-                cos_angle = np.cos(np.radians(angle))
-                sin_angle = np.sin(np.radians(angle))                                
-                
-                g_ell_center = (cross[0],cross[1]*distortion)
-                g_ell_width = np.abs(cos_angle)*width + np.abs(sin_angle)*height
-                g_ell_height = np.abs(cos_angle)*height# + 0.1*np.abs(sin_angle)*width
-                    
-                cos_angle = np.cos(np.radians(180.-angle))
-                sin_angle = np.sin(np.radians(180.-angle))
-                
-                xc = X - g_ell_center[0]
-                yc = Y*distortion - g_ell_center[1]
-                
-                xct = xc * cos_angle - yc * sin_angle
-                yct = xc * sin_angle + yc * cos_angle 
-                
-                rad_cc = (xct**2/(g_ell_width/2.)**2) + (yct**2/(g_ell_height/2.)**2)
-                
-                intensity[rad_cc <= 1] += np.cos(np.pi/2.*rad_cc[rad_cc<=1])                
-
-                if plotting and j in idx_plot:
-                    # create ellipse
-                    ellipse = patches.Ellipse(g_ell_center, g_ell_width, g_ell_height, angle=angle, fill=False, edgecolor='white', linewidth=0.5)
-                    # Get the path
-                    path = ellipse.get_path()
-                    # Get the list of path vertices
-                    vertices = path.vertices.copy()
-                    # Transform the vertices so that they have the correct coordinates
-                    vertices = ellipse.get_patch_transform().transform(vertices)
-                    vertices[:,1]/=distortion
-                    ellipse_paths.append(vertices)
-
-            # bit of smoothing
-            #intensity[cno==idx_intens] -= np.min(intensity[cno==idx_intens])
-            #intensity[cno==idx_intens] = gaussian_filter(intensity[cno==idx_intens],dvcycle*15.)
-            intensity[cno==idx_intens] = running_mean(intensity[cno==idx_intens],7)
-            column = intensity[cno==idx_intens]
-    
-            # QUALITY CHECKING PREVIOUS PICKS
-            # CHECK 1: IS THERE A CYCLE JUMP BETWEEN THE LAST PICK AND THE ONE TWO CYCLES BEFORE?
-            if len(picks) > 5:
-                idx_pick = np.abs(np.array(picks)[:,0]-(fpick-2*fstep)).argmin()
-                if idx_pick>0:                     
-                    # cycle jumps that go to higher velocities are more likely to get punished
-                    if (picks[-1][1]-picks[idx_pick][1] < -0.25*dvcycle - np.max([np.abs(ref_vel-func(picks[-1][0])),np.abs(slope*(picks[-1][0]-picks[idx_pick][0]))]) or
-                        picks[-1][1]-picks[idx_pick][1] >  0.4*dvcycle):
-                        if plotting:
-                            print("    cycle jump detected")
-                            print("    last pick:",picks[-1])
-                            print("    pick two cycles before:",picks[idx_pick])
-                            print("    freq two cycles before:",fpick-2*fstep)
-                        while picks[-1][0]>fpick-1.5*fstep:
-                            if plotting:
-                                print("    removing",picks[-1])
-                            picks.remove(picks[-1])
-
-            # CHECK 2: DID WE JUMP MORE THAN 2 ZERO CROSSINGS?
-            if len(picks) > 1:
-                if fpick-picks[-1][0] > 2*fstep:
-                    if plotting:
-                        print("    %.3f: data quality too poor." %fpick)
-                    if dvcycle/(np.max(ref_curve[:,1]) - np.min(ref_curve[:,1])) < 1/3.:
-                        if plotting:
-                            print("    stopping")
-                        pick_to_the_end=False
-                        break
-                    else:
-                        if plotting:
-                            print("    restarting")
-                        if len(picks_backup)<len(picks):
-                            picks_backup = picks # save a copy of "bad" picks
-                        picks = []
-
-            # IF NO PREVIOUS PICKS HAVE BEEN TAKEN: CHOOSING FIRST PICKS 
-            if len(picks)<5:
-                if dvcycle/(ref_curve[0,1] - ref_vel) < 0.33:
-                    if plotting:
-                        print("    dvcycle:",dvcycle,"ref_curve[0,1]-ref_vel :",(ref_curve[0,1] - ref_vel))
-                        print("    %.2f: cycles are too close, stopping" %fpick)
+                freq_gridpoints = gridaxis[idx_gridpoints]
+                if freq_gridpoints > kernel_upper_boundary:
                     break
-
-                idxmax = find_peaks(column)[0] #all indices of maxima 
-                if len(idxmax)==0:
-                    continue
-                idxmin = find_peaks(column*-1)[0]
-                idxpick = np.abs(yaxis[idxmax]-func(fpick)).argmin() #index of closest maximum
-                maxamp = column[idxmax[idxpick]]
-                try:
-                    if yaxis[idxmin[idxpick]]>yaxis[idxmax[idxpick]]:
-                        minamp = np.mean(column[idxmin[idxpick-1:idxpick+1]])
-                    else:
-                        minamp = np.mean(column[idxmin[idxpick:idxpick+2]]) 
-                except:
-                    minamp = 0.0001
-                    if idxmax[idxpick]==idxmax[-1] or idxmax[idxpick]==idxmax[0]: #there should be one faster and one slower maximum nearby.
-                        # otherwise, use the amplitude at +- one cycle from the pick
-                        minamp = np.min(column[((yaxis>yaxis[idxmax[idxpick]]-dvcycle)&(yaxis<yaxis[idxmax[idxpick]]+dvcycle))])
-                        #minamp = np.min(smoothed[(np.abs(yaxis-(yaxis[idxmax[idxpick]]+dvcycle/2.)).argmin(),
-                        #                np.abs(yaxis-(yaxis[idxmax[idxpick]]-dvcycle/2.)).argmin()),j])
-                if maxamp/(minamp+1e-5)>pick_threshold*1.25: # higher threshold for first picks
-                    closest_vel = yaxis[idxmax[idxpick]]
-                    if len(picks)>0:
-                        if (np.abs(closest_vel-picks[-1][1])>0.1*dvcycle+np.abs(func(fpick)-func(picks[-1][0])) or 
-                            closest_vel>picks[-1][1]+0.1*dvcycle):
-                            if plotting:
-                                print("   %.3f: pick (%.2f) too far off last pick (%.2f), skipping" %(fpick,closest_vel,picks[-1][1]))
-                            picks = [[fpick,closest_vel]]
-                            continue
-                    picks.append([fpick,closest_vel])
+                                
+                # determine the sampling for the weight field in y-direction (vel)
+                # we do not care about the branches that are very far away from the
+                # last pick, only take those into account that are close
+                if len(picks)>3:
+                    dv = dv_cycle_jump(freq_gridpoints,picks[-1][1],
+                                       interstation_distance)
+                    lower_vlim = np.min([picks[-1][1]-5*dv,
+                                         reference_curve_func(freq_gridpoints)-dv])
+                    upper_vlim = np.max([picks[-1][1]+2*dv,
+                                         reference_curve_func(freq_gridpoints)+dv])
+                    Ypoints = np.arange(np.max((lower_vlim,min_vel)),
+                                        np.min((upper_vlim,max_vel)),
+                                        dv/sampling)
                 else:
-                    if plotting:
-                        print("   %.3f: amplitude of maximum too low, no first pick taken" %fpick)  
-
-                if len(picks)==5:
-                    if np.abs(np.mean(np.array(picks)[:,1])-func(fpick))>dvcycle/2.:
-                        picks = []
-                        if plotting:
-                            print("    discarding first picks: too far from reference curve")
-                    elif picks[-1][1]-picks[0][1]>0:
-                        if plotting:
-                            print("   %.3f: discarding picks: increasing velocities" %(fpick))
-                        picks = []
-
-
-            # CHOOSING FOLLOWING PICKS
+                    dv = dv_cycle_jump(freq_gridpoints,
+                                       reference_curve_func(freq_gridpoints),
+                                       interstation_distance)
+                    Ypoints = np.arange(min_vel,max_vel,dv/sampling)
+                Xpoints = np.ones(len(Ypoints))*freq_gridpoints
+                
+                X = np.append(X,Xpoints)
+                Y = np.append(Y,Ypoints)
+                density = np.append(density,np.zeros(len(Xpoints)))
+                        
+                idx_gridpoints += 1
+                # END OF INNERMOST LOOP
+            ##################################################################
+                
+            # the reference velocity is needed to find the optimal rotation
+            # angles for the elliptical kernels
+            if len(picks)<1:
+                if cross_vel is None:
+                    reference_velocity = reference_curve_func(freq_kernel)
+                else:
+                    reference_velocity = cross_vel
             else:
-                intercept=picks[-1][1]-slope*picks[-1][0]
-                v_predicted = slope*fpick+intercept
-                idxmax = find_peaks(column)[0] #all indices of maxima 
-                if len(idxmax)==0:
-                    continue
-                idxmin = find_peaks(column*-1)[0]
-                idxpick = np.abs(yaxis[idxmax]-v_predicted).argmin() #index of closest maximum
-                idxpick2 = np.abs(yaxis[idxmax]-v_predicted).argsort()[1] # index of 2nd closest maximum
-                if (np.abs((yaxis[idxmax[idxpick2]]-v_predicted)/(yaxis[idxmax[idxpick]]-v_predicted)) < 1.2 or
-                    np.abs(yaxis[idxmax[idxpick2]]-yaxis[idxmax[idxpick]]) < 0.5*dvcycle):
-                    if plotting:
-                        print("    %.3f: branches are too close to get a good next pick" %(fpick))
-                    picks.remove(picks[-1]) #punish
-                    continue
-                #idxpick = np.abs(yaxis[idxmax]-picks[-1][1]).argmin() #index of closest maximum
-                maxamp = column[idxmax[idxpick]]
-                #print("\n",fpick,maxamp)
-                try:
-                    if yaxis[idxmin[idxpick]]>yaxis[idxmax[idxpick]]:
-                        minamp = np.mean(column[idxmin[idxpick-1:idxpick+1]]) 
-                        #dv_minima = np.diff(yaxis[idxmin[idxpick-1:idxpick+1]])
-                    else:
-                        minamp = np.mean(column[idxmin[idxpick:idxpick+2]]) 
-                        #dv_minima = np.diff(yaxis[idxmin[idxpick:idxpick+2]])                        
-                except:
-                    minamp = 0.0001
-
-                if idxpick>0 and idxpick<(len(idxmax)-2):
-                    dv_maxima = np.mean(np.diff(yaxis[idxmax[idxpick-1:idxpick+2]]))
-                    if dv_maxima<0.4*dvcycle or dv_maxima>2.5*dvcycle:
-                        picks.remove(picks[-1]) #punish
-                        if plotting:
-                            print("   %.3f: adjacent maxima are too close/too far away. %.3f %.3f" %(fpick,dv_maxima,dvcycle))
-                        continue  
-                if maxamp/(minamp+1e-5)>pick_threshold:
-                    closest_vel = yaxis[idxmax[idxpick]]
-                    if closest_vel-picks[-1][1] < - 0.25*dvcycle - np.max([np.abs(ref_vel-func(picks[-1][0])),np.abs(slope*(picks[-1][0]-fpick))]):
-                        if plotting:
-                            print("   %.3f: velocityjump to lower velocities too large" %fpick)
-                            print("   veljump: %.2f; 0.2*dvcycle: %.2f; reference curve jump: %.2f; predicted jump: %.2f" %(closest_vel-picks[-1][1],-0.2*dvcycle,-np.abs(ref_vel-func(picks[-1][0])),-np.abs(slope*(picks[-1][0]-fpick))))
-                            print("slope:",slope)
-                            print("last pick:",picks[-1])
-                        continue
-                        if fpick<w_axis[-1]/10.:
-                            picks = []
-                    if closest_vel-picks[-1][1] >   np.max([0.3*dvcycle,ref_vel-func(picks[-1][0])]):
-                        if plotting:
-                            print("   %.3f: velocityjump to higher velocities too large" %fpick)
-                            print("   veljump: %.2f; 0.3*dvcycle: %.2f; reference curve jump: %.2f; predicted jump: %.2f" %(closest_vel-picks[-1][1],0.2*dvcycle,np.abs(ref_vel-func(picks[-1][0])),np.abs(slope*(picks[-1][0]-fpick))))
-                        continue
-                        if fpick<w_axis[-1]/10.:
-                            picks = []
-                    if np.abs(closest_vel-picks[-1][1]) > np.max([np.abs(func(fpick)-func(picks[-1][0])),10*np.mean(np.abs(np.diff(np.array(picks)[-three_freq_step:,1])))]):
-                        if plotting:
-                            print("   %.3f: irregular velocity jump (previous: %.2f, current: %.2f" %(fpick,picks[-1][1],closest_vel))
-                        continue
-                        if fpick<w_axis[-1]/10.:
-                            picks = []                        
-                    picks.append([fpick,closest_vel])
-                else: # if it is currently not possible to take a pick, then remove the last slope in the collection, otherwise the algorithm will append several times the same slope, overweighting the last picks
-                    slope_history = slope_history[:-1]
-                    if plotting:
-                        print("    %.3f: no pick taken" %fpick)
-
-
-    # END OF PICKING LOOP -------------
-
-
-#    # PICKING TO THE END OF THE ALREADY SMOOTHED WINDOW
-#    if len(picks)>0 and pick_to_the_end:
-#        for j in range(int(three_freq_step/2)+1,three_freq_step):
-#            idxmax = argrelextrema(smoothed[:,j],np.greater)[0] #all indices of maxima
-#            idxmin = argrelextrema(smoothed[:,j],np.less)[0]
-#            idxpick = np.abs(yaxis[idxmax]-picks[-1][1]).argmin() #index of closest maximum
-#            maxamp = smoothed[:,j][idxmax[idxpick]]
-#            try:
-#                if yaxis[idxmin[idxpick]]>yaxis[idxmax[idxpick]]:
-#                    minamp = np.mean(smoothed[:,j][idxmin[idxpick-1:idxpick+1]]) 
-#                else:
-#                    minamp = np.mean(smoothed[:,j][idxmin[idxpick:idxpick+2]]) 
-#            except:
-#                minamp = 0.0001
-#            if maxamp/minamp>pick_threshold:
-#                closest_vel = yaxis[idxmax[idxpick]]
-#                if np.abs(closest_vel-picks[-1][1])>0.3*dv_cycle:
-#                    continue
-#                picks.append([X[0][-three_freq_step+j],closest_vel])
-#
-#            # QUALITY CHECKING
-#            if freq-picks[-1][0] > 3*freq_step:
-#                if plotting:
-#                    print("data quality too poor.")
-#                if dv_cycle/(np.max(ref_curve[:,1]) - np.min(ref_curve[:,1])) < 1/3.:
-#                    if plotting:
-#                        print("stopping")
-#                    break
-#        if len(picks)>0:
-#            idx_pick = np.abs(np.array(picks)[:,0]-(freq-2*freq_step)).argmin()
-#            if idx_pick>0:
-#                if np.abs(picks[-1][1]-picks[idx_pick][1])>0.5*dv_cycle or np.abs(picks[-1][1]-picks[-2][1])>0.5*dv_cycle:
-#                    if plotting:
-#                        print("cycle jump detected")
-#                    while picks[-1][0]>freq-2*freq_step:
-#                        if plotting:
-#                            print("removing",picks[-1])
-#                        picks.remove(picks[-1])
-#                            
-#    Z_smooth = np.column_stack((Z_smooth,smoothed[:,int(three_freq_step/2):]))
+                reference_velocity = (picks[-1][1] + np.mean([
+                    slope*(freq_kernel-picks[-1][0]),
+                    reference_curve_func(freq_kernel)-
+                    reference_curve_func(picks[-1][0])]) )
+               
+            # find the most likely slope associated to each zero crossing
+            # these slopes are used to rotate the elliptical kernels
+            cross_slopes,cross_idx,cross_vel = get_zero_crossing_slopes(
+                crossings,freq_kernel,reference_velocity,slope,filt_width,
+                reference_curve_func,interstation_distance)
+            crossings[cross_idx,2] = cross_slopes
+            
+            # add the kernel weights
+            # if the plotting option is True, some of the ellipses will be drawn
+            # the idx_plot list controls for which zero crossings this will be done
+            if plotting:
+                idx_plot = []
+                if idx_kernel%1==0:
+                    idx_plot = np.abs(crossings[cross_idx,1]-reference_velocity).argmin()
+                    idx_plot = [idx_plot-2,idx_plot-1,idx_plot+1]
+            
+            # get the elliptical kernels and update the weight field
+            density, ell_paths = update_density_field(
+                X,Y,density,crossings[cross_idx],
+                reference_velocity/(2*interstation_distance),
+                filt_width,filt_height,
+                interstation_distance,idx_plot=idx_plot)
+            ellipse_paths += ell_paths
+            
+            idx_kernel += 1
     
+            # END OF INNER LOOP
+        ######################################################################             
+        # back to picking loop
+        
+        # take either the velocity of the last pick or that of the ref curve
+        if len(picks)<3:
+            reference_velocity = reference_curve_func(freq_pick)
+        else:
+            reference_velocity = picks[-1][1]
+            
+        # dv_cycle: velocity jump corresponding to 2pi cycle jump    
+        dv_cycle = dv_cycle_jump(freq_pick,reference_velocity,
+                                 interstation_distance)
+
+        # estimate the slope of the picked phase velocity curve
+        # if there are no picks yet, use the reference curve
+        slope = get_slope(picks,freq_pick,x_step,
+            reference_curve_func, verbose=plotting)
+    
+        # check if there are already picks made, if yes, do a quality check
+        picks_jumped = 0
+        picks,picks_backup,slope,picks_jumped = check_previous_picks(
+            picks,picks_backup,freq_pick,slope,min_vel,max_vel,
+            reference_curve_func,gridaxis,interstation_distance,
+            verbose=plotting)
+            
+            
+        # check that the parallel phase velocity branches are well separated
+        # for taking the first picks. otherwise do not take a first pick
+        if len(picks)<3:
+            cross_freq = w_axis[np.abs(w_axis-freq_pick).argmin()]
+            if (np.sum(crossings[:,0]==cross_freq) > 10 or 
+                (dv_cycle < np.max([reference_curve_func(w_axis[0]) - reference_velocity,
+                                    (max_vel-min_vel)/10.]))):
+                if plotting:
+                    print("    dvcycle: %.2f  ref_curve[0,1]-ref_vel : %.2f"
+                          %(dv_cycle, ref_curve[0,1]-reference_velocity))
+                    print("    %.3f: cycles are too close, stopping" %freq_pick)
+                break # terminate picking
+
+        # smooth the density field before picking to avoid that there are
+        # small density maxima very close to each other
+        # vertical smoothing
+        density[freq_pick==X] = running_mean(density[freq_pick==X],int(sampling/4))
+        # and a bit of lateral smoothing
+        if idx_pick > 0:
+            density_before = np.interp(X[freq_pick==X],
+                                       X[gridaxis[idx_pick-1]==X],
+                                       density[gridaxis[idx_pick-1]==X])
+            density[freq_pick==X] = 0.8*density[freq_pick==X] + 0.2*density_before
+        
+        # weights at the current frequency where the next pick will be taken
+        # Y array contains the velocities along the y axis and weights the
+        # corresponding weights. Picks will be taken where the weights are maximum
+        pick_density = (Y[freq_pick==X],density[freq_pick==X])
+
+        picks = pick_velocity(picks,freq_pick,pick_density,slope,x_step,
+                              min_vel,max_vel,dv_cycle,reference_curve_func,
+                              pick_threshold,verbose=plotting)
+                            
+        idx_pick += 1
+        # END OF PICKING LOOP
+    ##########################################################################
+
+
+
+
     # CHECK IF THE BACKUP PICKS ("BAD" ONES DISCARDED BEFORE) HAVE THE BETTER COVERAGE
     if len(picks_backup)>len(picks):
         picks = picks_backup
 
     # SMOOTH PICKED PHASE VELOCITY CURVE
-    picks=np.array(picks)
-    if len(picks)>three_freq_step:
-        picksfu = interp1d(picks[:,0],picks[:,1],bounds_error=False)
-        picks_interpolated = picksfu(np.unique(X))
+    picks=np.array(picks)[1:]
+    if (len(picks) > 3 and np.max(picks[:,0])-np.min(picks[:,0]) > 
+                          (np.max(w_axis)-np.min(w_axis))/8.):
+        # remove picks that are above the highest/fastest zero crossing
+        bad_pick_idx = []
+        maxv = 0.
+        for freq in w_axis:
+            cross = crossings[freq==crossings[:,0]]
+            maxv = np.max(np.append(cross[:,1],maxv))
+            if maxv > np.max(picks[:,1]):
+                break
+            bad_pick_idx.append(np.where((picks[:,0]<freq)*(picks[:,1]>maxv))[0])
+        if len(bad_pick_idx)>0:
+            bad_pick_idx = np.unique(np.hstack(bad_pick_idx))
+        picks_smoothed = np.delete(picks,bad_pick_idx,axis=0)
+        # smooth and interpolate picks
+        picks_smoothed[:,1] = running_mean(picks_smoothed[:,1],int(3/x_step))
+        picksfu = interp1d(picks_smoothed[:,0],picks_smoothed[:,1],
+                           bounds_error=False,fill_value=np.nan)
+        picks_interpolated = picksfu(logspaced_frequencies)
         smoothingpicks = picks_interpolated[~np.isnan(picks_interpolated)]
-        smooth_picks = running_mean(smoothingpicks,int((1-x_step)*20)+1)
-        smooth_picks_x=np.unique(X)[~np.isnan(picks_interpolated)]
+        smooth_picks = running_mean(smoothingpicks,7)
+        smooth_picks_x = logspaced_frequencies[~np.isnan(picks_interpolated)]
     else:
+        if plotting and len(picks)>1:
+            print("  picked freq range: %.3f required: %.3f" %(
+                np.max(picks[:,0])-np.min(picks[:,0]),
+                (np.max(w_axis)-np.min(w_axis))/6.))
         smooth_picks = []
-        smooth_picks_x = [] 
-    
-
-    if plotting:   
+        smooth_picks_x = []
+        
+    if len(smooth_picks) < len(logspaced_frequencies)/5.:
+        if plotting:
+            print("  picked range too short")
+            print("  picked crossings:",len(picks),"of a total of",len(gridaxis))
+        smooth_picks = []
+        smooth_picks_x = []         
+        
+    # PLOT THE RESULTS
+    if plotting:  
         plt.ioff()
         fig = plt.figure(figsize=(8,6))
         ax = fig.add_subplot(111)
         ax2 = ax.twiny()
         fig.subplots_adjust(bottom=0.15)
-        #circles = [plt.Circle((xi,yi), radius=0.5, linewidth=0,color=ci) for xi,yi,ci in zip(X.flatten(),y.flatten(),intensity.flatten())]
-        #c = matplotlib.collections.PatchCollection(circles)
-        #ax.add_collection(c)
-        ax.scatter(X,Y,c=intensity)
-        #ax.tricontourf(X,Y,intensity)
-        x,y = (np.linspace(0,0.5,500),np.linspace(1,6,500))
+        #ax.scatter(X,Y,c=density)
+        distortion = 0.0001
+        dy = np.diff(Y)
+        dy = np.min(dy[dy>0])
+        dx = np.diff(X)
+        dx = np.min(dx[dx>0])
+        x = np.linspace(np.min(X),np.max(X),int(np.max([100,(np.max(X)-np.min(X))/dx])))
+        y = np.linspace(np.min(Y),np.max(Y),int(np.max([100,(np.max(Y)-np.min(Y))/dy])))
         xplot,yplot = np.meshgrid(x,y)
-        #plt.pcolormesh(xplot,yplot,griddata((X,Y),intensity,(xplot,yplot)))
-        #ax.pcolormesh(X,Y,intensity)
-        ax.plot(copycrossings[:,0],copycrossings[:,1],'wo',markeredgecolor='black',ms=2,linewidth=0.3,label='zero crossings')
+        density_interpolated = griddata((X,Y*distortion),density,(xplot,yplot*distortion))
+        for xi in range(len(x)):
+            xtest = X[np.abs(x[xi]-X).argmin()]
+            testvels = Y[X==xtest]
+            density_interpolated[yplot[:,xi]>np.max(testvels),xi] = np.nan
+            density_interpolated[yplot[:,xi]<np.min(testvels),xi] = np.nan
+        #ax.tricontourf(X,Y,density)
+        ax.pcolormesh(xplot,yplot,density_interpolated,shading='nearest')
+        length = np.mean(np.diff(w_axis))/2.
+        for cross in crossings:
+            ax.plot([cross[0]-length,cross[0]+length],[cross[1]+cross[2]*-length,cross[1]+cross[2]*length],'y-')
+        ax.plot(zero_crossings[:,0],zero_crossings[:,1],'wo',markeredgecolor='black',ms=2,linewidth=0.3,label='zero crossings')
         ax.plot(ref_curve[:,0],ref_curve[:,1],linewidth=2,color='lightblue',label='reference curve')
         #plt.plot(tipx,tipy,'o')
-        #for vertices in ellipse_paths[::1]:
-        #    ax.plot(vertices[:,0],vertices[:,1],color='white',linewidth=0.5)
+        for vertices in ellipse_paths[::1]:
+            ax.plot(vertices[:,0],vertices[:,1],color='white',linewidth=0.5)
+        ax.axvline(freq_pick,linestyle='dashed')
+        #for testpnt in test_points:
+        #    ax.plot(testpnt[:,0],testpnt[:,1],'r--',linewidth=0.9)
         for pick in picks:
             ax.plot(pick[0],pick[1],'o',color='red',ms=2)
         ax.plot([],[],'o',color='red',ms=2,label='picks')
         ax.plot(smooth_picks_x,smooth_picks,'r--',label='smoothed picks')
         ax.legend(loc='upper right',framealpha=0.85)
-        ax.set_xlim(0,np.max([fpick+0.1,w_axis[int(len(w_axis)/2)]]))
+        ax.set_xlim(0,np.max([freq_pick+0.1,w_axis[int(len(w_axis)/2)]]))
         ax2.set_xlim(ax.get_xlim())
         new_tick_locations = ax.get_xticks()[ax.get_xticks()<np.max(ax.get_xlim())]
         ax2.xaxis.set_ticks_position("bottom")
@@ -1338,8 +1890,6 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
         ax2.spines["bottom"].set_position(("axes", -0.1))
         ax2.set_frame_on(True)
         ax2.patch.set_visible(False)
-        #for sp in ax2.spines.itervalues():
-        #    sp.set_visible(False)
         ax2.spines["bottom"].set_visible(True)
         ax2.set_xticks(new_tick_locations[new_tick_locations>0.])
         ax2.set_xticklabels(np.around(1./new_tick_locations[new_tick_locations>0.],2))
@@ -1348,26 +1898,19 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,\
         ax.set_xlabel("Frequency [Hz]")
         ax.set_ylabel("Phase Velocity [km/s]")
         ax.annotate("Distance: %d km" %interstation_distance,xycoords='figure fraction',xy=(0.7,0.18),fontsize=12,bbox=dict(boxstyle="square,pad=0.2",fc='white',ec='None', alpha=0.85))
-        plt.savefig("example_picking.pdf")
+        #ax.set_aspect('equal')
+        plt.savefig("example_picking.png",bbox_inches='tight',dpi=200)
         plt.show()
         
 
- #   plt.figure()
-#    plt.tricontourf(cross_img[:,0],cross_img[:,1],cross_img[:,2])
-#    plt.scatter(cross_img[:,0],cross_img[:,1],c=cross_img[:,2])
-#    #plt.plot(picks[:,0],picks[:,1],'r')
-#    plt.plot(picks[:,0],picks[:,1],'r.')
-#    plt.plot(crossings[:,0],crossings[:,1],'ko',ms=3)
 #%%
-    if len(smooth_picks)> 7*1/x_step or (smooth_picks_x[-1]-smooth_picks_x[0]) > (w_axis[-1]-w_axis[0])/5.: 
-        return copycrossings,np.column_stack((smooth_picks_x,smooth_picks))
+    if len(smooth_picks) > 0: 
+        return zero_crossings,np.column_stack((smooth_picks_x,smooth_picks))
     else:
-        if plotting:
-            print("    picked freqency range too short")
-            print("   ",len(smooth_picks))
-            print("   ",7*1/x_step)
-            print(smooth_picks)
         raise Exception('Picking phase velocities from zero crossings was not successful.')
+
+
+ 
 
 #%%
 ##############################################################################
@@ -1385,8 +1928,8 @@ def bessel_curve_fitting(freq,corr_spectrum, ref_curve, interstation_distance, f
     def running_mean(x, N):
         if N%2 == 0:
             N+=1
-        x = np.insert(x,0,np.ones(np.int(N/2))*x[0])
-        x = np.append(x,np.ones(np.int(N/2))*x[-1])
+        x = np.insert(x,0,np.ones(int(N/2))*x[0])
+        x = np.append(x,np.ones(int(N/2))*x[-1])
         cumsum = np.cumsum(np.insert(x, 0, 0)) 
         return (cumsum[N:] - cumsum[:-N]) / N 
         

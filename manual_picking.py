@@ -10,7 +10,7 @@ Created on Thu Nov  6 14:07:02 2014
 
 crosscorrelations_folder = "./cross_correlation_spectra/ZZ/*"
 
-output_folder = "picked_dispersioncurves"
+output_folder = "manually_picked_dispersioncurves"
 
 
 # parameters
@@ -32,7 +32,7 @@ horizontal_polarization=False # only True for RR or TT correlations
 
 # create figures
 create_timedomain_figures = True
-figure_folder = "crosscorrelation_figures"
+figure_folder = "manual_picking_figures"
 
 #############################
 

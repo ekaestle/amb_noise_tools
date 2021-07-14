@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 Updated June 2021
-script makes sure now that the horizontal traces are sampled at the same points in time
-if there is a large subsample time shift. Before, this would result in an error.
+- script makes sure now that the horizontal traces are sampled at the same points in time
+  if there is a large subsample time shift. Before, this would result in an error.
+- can read station xml files to get station information
+- better error handling
+- fixed memory leak in the horizontal component correlations
+
 
 
 @author: emanuel
@@ -25,19 +29,8 @@ path='./preprocessed_data'
 # (capitalization is not important)
 formats = ['mseed','SAC','sync'] # for example: ['mseed','SAC'] or leave empty []
 
-# filename of sqlite database (created if not yet existing)
-# this database lists all existing files, components, available timeranges, etc.
-database_file = 'database_ambnoise.sqlite'
-
-# check if there are new files in the path. The sqlite database is then updated
-update_database = True # recommended to be True
-
 # station list (file is created if not existing yet)
 statfilepath = './statlist.txt' # 3 columns: station_id latitude longitude
-
-# check if there are stations missing in the the 'statfilepath' file.
-# missing information is added from the station xml metadata if available
-update_statlist = True # recommended to be True if working with xml inventory files
 
 # OPTIONAL: folder where the station inventory files are stored (to get station location information)
 # if there are no xml files, the lat/lon information has to be provided via the statfile
@@ -48,6 +41,17 @@ inventory_directory = "./station_inventory" # xml inventory files
 # new data will be added to existing *.pkl files in that folder
 spectra_path='cross_correlation_spectra'
 
+# filename of sqlite database (created if not yet existing)
+# this database lists all existing files, components, available timeranges, etc.
+database_file = 'database_ambnoise.sqlite'
+
+# check if there are new files in the path. The sqlite database is then updated
+update_database = True # recommended to be True, can take long for many files
+
+# check if there are stations missing in the the 'statfilepath' file.
+# missing information is added from the station xml metadata if available
+update_statlist = True # recommended to be True if working with xml inventory files
+
 # traces are cut into windows. windowed data is then correlated
 # ideal length depends on your typical station distances and if you're interested in the coda
 window_length=3600. # in seconds
@@ -56,7 +60,7 @@ window_length=3600. # in seconds
 overlap = 0.5
 
 # minimum allowed inter-station distance in km
-min_distance = 2. 
+min_distance = 5. 
 
 # whiten spectra prior to cross correlation (see Bensen et al. 2007)
 whiten = True
@@ -78,7 +82,6 @@ only_process_these_stations = None
 
 # if necessary, see also other parameters for function noise.noisecorr below.
 """ END OF USER DEFINED PARAMETERS"""
-
 from mpi4py import MPI
 import numpy as np
 from obspy import read, Stream, UTCDateTime, read_inventory
@@ -112,38 +115,28 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
         stream2 = stream.select(network=net2,station=sta2,component='Z')
         
         if len(stream1) == 0 or len(stream2) == 0:
-            #print(stat1,stat2,"no data in stream for",corrcomp,"correlation!")
-            #print(stream)
             return None
             
-        timeranges = []
-        for tr1 in stream1:
-            for tr2 in stream2:
-                
-                if tr1.stats.starttime > tr2.stats.starttime:
-                    tstart = tr1.stats.starttime
-                else:
-                    tstart = tr2.stats.starttime
-                if tr1.stats.endtime > tr2.stats.endtime:
-                    tend = tr2.stats.endtime
-                else:
-                    tend = tr1.stats.endtime
-
-                if tend >= tstart+window_length:                       
-                    timeranges.append([tstart,tend])
-                    
-
-        if len(timeranges)==0:
-            return None
-        
+        stream1,stream2 = noise.adapt_timespan(stream1, stream2,
+                                               min_overlap=window_length)
+        if len(stream1) != len(stream2):
+            raise Exception("this should be impossible")
+            
+        if len(stream1)==0 or len(stream2)==0:
+            return None        
     
         corr_list = []
         no_windows = []
         
-        for tstart,tend in timeranges:
+        for idx in range(len(stream1)):
+            
+            tstart = stream1[idx].stats.starttime
+            tend = stream1[idx].stats.endtime
 
             st1 = stream1.slice(starttime=tstart,endtime=tend)
             st2 = stream2.slice(starttime=tstart,endtime=tend)
+            # for the unlikely case that we have several overlapping traces
+            # for the same station
             if len(st1)!=1 or len(st2)!=1:
                 st1._cleanup()
                 st2._cleanup()
@@ -152,6 +145,11 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                     st1 = Stream(st1[np.array(list(map(len,st1))).argmax()])
                 if len(st2)>1:
                     st2 = Stream(st2[np.array(list(map(len,st2))).argmax()])
+                
+            if (st1[0].stats.starttime != st2[0].stats.starttime or
+                st1[0].stats.endtime != st2[0].stats.endtime or
+                st1[0].stats.endtime - st2[0].stats.starttime < window_length):
+                raise Exception("this should be impossible")
                 
             if np.std(st1[0].data) == 0. or np.std(st2[0].data) == 0. :
                 print("data all zero",file=flog)
@@ -166,13 +164,13 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 print(st2,file=flog)
                 continue
             
-            try:
-                freq,spec = noise.noisecorr(st1[0],st2[0],window_length,overlap,
-                                            whiten=whiten,onebit=onebit)
-                corr_list.append(spec)
-                no_windows.append(int((tend-tstart-window_length)/((1-overlap)*window_length))+1)
-            except:
-                continue
+            #try:
+            freq,spec,wincount = noise.noisecorr(st1[0],st2[0],window_length,overlap,
+                                                  whiten=whiten,onebit=onebit)
+            corr_list.append(spec)
+            no_windows.append(wincount)
+            #except:
+            #    continue
         
         if len(corr_list) == 0:
             return None
@@ -188,6 +186,11 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
             if (year,julday) in corr_dict['corrdays']:
                 print("correlation day already in database!",filepath,year,julday, "skipping")          
             else:
+                if len(corr_spectrum)!=len(corr_dict['spectrum']):
+                    print("Warning: correlation trace has not the same length "+
+                          "as the trace in the database. Maybe different "+
+                          "sampling rates? Skipping.",net1,sta1,net2,sta2)
+                    return None
                 corr_dict['corrdays'].append((year,julday))
                 corr_dict['spectrum'] = np.average([corr_spectrum,
                                                     corr_dict['spectrum']],
@@ -250,75 +253,35 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
         stream2n = stream.select(network=net2,station=sta2,component='N')
         stream2e = stream.select(network=net2,station=sta2,component='E')
         
-        if len(stream1n) == 0 or len(stream1e) == 0 or len(stream2n) == 0 or len(stream2e) == 0:
-            #print(stat1,stat2,"no data in stream for",corrcomp,"correlation!")
-            #print(stream)
+        if (len(stream1n) == 0 or len(stream1e) == 0 or 
+            len(stream2n) == 0 or len(stream2e) == 0):
             return None      
         
-        timeranges = []
+        stream1n,stream1e = noise.adapt_timespan(stream1n, stream1e,
+                                                 min_overlap=window_length)
+        stream2n,stream2e = noise.adapt_timespan(stream2n, stream2e,
+                                                 min_overlap=window_length)
+        
+        if (len(stream1n) == 0 or len(stream1e) == 0 or 
+            len(stream2n) == 0 or len(stream2e) == 0):
+            return None 
+        
+        stream1n,stream2n = noise.adapt_timespan(stream1n,stream2n,
+                                                 min_overlap=window_length)
+        stream1e,stream2e = noise.adapt_timespan(stream1e,stream2e,
+                                                 min_overlap=window_length)
 
-        timeranges1 = []
-        for tr1 in stream1n:
-            for tr2 in stream1e:
-                
-                if tr1.stats.starttime > tr2.stats.starttime:
-                    tstart = tr1.stats.starttime
-                else:
-                    tstart = tr2.stats.starttime
-                if tr1.stats.endtime > tr2.stats.endtime:
-                    tend = tr2.stats.endtime
-                else:
-                    tend = tr1.stats.endtime
-
-                if tend >= tstart+window_length:                       
-                    timeranges1.append([tstart,tend])
-                    
-        if len(timeranges1)==0:
-            return None
-
-        timeranges2 = []
-        for tr1 in stream2n:
-            for tr2 in stream2e:
-                
-                if tr1.stats.starttime > tr2.stats.starttime:
-                    tstart = tr1.stats.starttime
-                else:
-                    tstart = tr2.stats.starttime
-                    
-                if tr1.stats.endtime > tr2.stats.endtime:
-                    tend = tr2.stats.endtime
-                else:
-                    tend = tr1.stats.endtime
-
-                if tend >= tstart+window_length:                       
-                    timeranges2.append([tstart,tend])
-                    
-        if len(timeranges2)==0:
+        if (len(stream1n) == 0 or len(stream1e) == 0 or 
+            len(stream2n) == 0 or len(stream2e) == 0):
             return None
         
-        
-        for range1 in timeranges1:
-            for range2 in timeranges2:
-                
-                if range1[0] > range2[0]:
-                    tstart = range1[0]
-                else:
-                    tstart = range2[0]
-                    
-                if range1[1] > range2[1]:
-                    tend = range2[1]
-                else:
-                    tend = range1[1]
-                    
-                if tend >= tstart+window_length:
-                    timeranges.append([tstart,tend])
-        
-    
         corr_list_rr = []
         corr_list_tt = []
         no_windows = []
 
-        for tstart,tend in timeranges:
+        for idx in range(len(stream1n)):
+            tstart = stream1n[idx].stats.starttime
+            tend = stream1n[idx].stats.endtime
             st1 = (stream1n+stream1e).slice(starttime=tstart,endtime=tend)
             st2 = (stream2n+stream2e).slice(starttime=tstart,endtime=tend)
             if len(st1)!=2 or len(st2)!=2:
@@ -349,24 +312,14 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 continue
             
             # check that the time span is really the same
-            # sometimes there are subsample time shifts
-            tstart = np.max([st1[0].stats.starttime,st1[1].stats.starttime,
-                             st2[0].stats.starttime,st2[1].stats.starttime])
-            # we accept a maximum time shift of 1/3*dt, otherwise interpolate
-            time_shifts = [np.abs(st1[0].stats.starttime - st1[1].stats.starttime),
-                           np.abs(st1[0].stats.starttime - st2[0].stats.starttime),
-                           np.abs(st1[0].stats.starttime - st2[1].stats.starttime),
-                           np.abs(st1[1].stats.starttime - st2[0].stats.starttime),
-                           np.abs(st1[1].stats.starttime - st2[1].stats.starttime),
-                           np.abs(st2[0].stats.starttime - st2[1].stats.starttime)]
-            if np.max(time_shifts) > 1./(3*st1[0].stats.sampling_rate):
-                st1.interpolate(st[0].stats.sampling_rate,starttime=tstart)
-                st2.interpolate(st[0].stats.sampling_rate,starttime=tstart)
-                # slice again
-                tend = np.min([st1[0].stats.endtime,st1[1].stats.endtime,
-                               st2[0].stats.endtime,st2[1].stats.endtime])
-                st1 = st1.slice(starttime=tstart,endtime=tend)
-                st2 = st2.slice(starttime=tstart,endtime=tend)
+            if (st1[0].stats.starttime != st1[1].stats.starttime or
+                st1[0].stats.starttime != st2[0].stats.starttime or
+                st1[0].stats.starttime != st2[1].stats.starttime or
+                st1[0].stats.endtime != st1[1].stats.endtime or
+                st1[0].stats.endtime != st2[0].stats.endtime or
+                st1[0].stats.endtime != st2[1].stats.endtime or
+                st1[0].stats.endtime - st1[0].stats.starttime < window_length):
+                raise Exception("this should not be possible!")
               
             # check for nan/inf values
             if (np.isnan(st1[0].data).any() or np.isnan(st1[1].data).any() or
@@ -398,26 +351,26 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 raise Exception("Error rotating stream")
                 continue
                     
-            try:
-                if 'RR' in corrcomp:
-                    freq,spec_rr = noise.noisecorr(st1.select(component='R')[0],
-                                                   st2.select(component='R')[0],
-                                                   window_length,overlap,
-                                                   whiten=whiten,onebit=onebit)
-                if 'TT' in corrcomp:
-                    freq,spec_tt = noise.noisecorr(st1.select(component='T')[0],
-                                                   st2.select(component='T')[0],
-                                                   window_length,overlap,
-                                                   whiten=whiten,onebit=onebit)
-            except:
-                continue
+            #try:
+            if 'RR' in corrcomp:
+                freq,spec_rr,wincount = noise.noisecorr(st1.select(component='R')[0],
+                                               st2.select(component='R')[0],
+                                               window_length,overlap,
+                                               whiten=whiten,onebit=onebit)
+            if 'TT' in corrcomp:
+                freq,spec_tt,wincount = noise.noisecorr(st1.select(component='T')[0],
+                                               st2.select(component='T')[0],
+                                               window_length,overlap,
+                                               whiten=whiten,onebit=onebit)
+            #except:
+            #    continue
 
 
             if 'RR' in comp_correlations:
                 corr_list_rr.append(spec_rr)
             if 'TT' in comp_correlations:
                 corr_list_tt.append(spec_tt)
-            no_windows.append(int((tend-tstart-window_length)/((1-overlap)*window_length))+1)
+            no_windows.append(wincount)
 
 
 
@@ -593,7 +546,14 @@ def get_julday_filelist(year,julday,comp,staids,window_length):
             filelist.append(data_dic[staid][comp]['paths'][idx])
             
     return filelist
-    
+
+
+def downsample_stream(st,sampling_frequency):
+    st.detrend(type='linear')
+    st.detrend(type='demean')
+    st.filter("lowpass",freq = 0.4*sampling_frequency,zerophase=True)
+    st.decimate(int(st[0].stats.sampling_rate/sampling_frequency),no_filter=True)
+    return    
 
 #%%
 if __name__ == "__main__":
@@ -797,15 +757,18 @@ if __name__ == "__main__":
                     if net in inv_filepath and sta in inv_filepath:
                         inv_filepaths.append(inv_filepath)
                 for inv_filepath in inv_filepaths:
-                    inventory = read_inventory(inv_filepath)
-                    if inventory[0].code == net and inventory[0][0].code==sta:
-                        statdict[staid]['latitude'] = inventory[0][0].latitude
-                        statdict[staid]['longitude'] = inventory[0][0].longitude
-                        try:
-                            statdict[staid]['elevation'] = inventory[0][0].elevation
-                        except:
-                            pass
-                        break
+                    try:
+                        inventory = read_inventory(inv_filepath)
+                        if inventory[0].code == net and inventory[0][0].code==sta:
+                            statdict[staid]['latitude'] = inventory[0][0].latitude
+                            statdict[staid]['longitude'] = inventory[0][0].longitude
+                            try:
+                                statdict[staid]['elevation'] = inventory[0][0].elevation
+                            except:
+                                pass
+                            break
+                    except:
+                        print("file not readable:",inv_filepath)
                 else:
                     try: # try to get the station information from the sac headers
                          # if the input files are not sac, will not work
@@ -828,9 +791,12 @@ if __name__ == "__main__":
                         f.write("%s %9.6f %10.6f %8.3f\n" %(staid_str,statdict[staid]['latitude'],
                                                             statdict[staid]['longitude'],
                                                             statdict[staid]['elevation']))
-                    else:
+                    elif ('latitude' in statdict[staid].keys() and 
+                          'longitude' in statdict[staid].keys()):
                         f.write("%s %9.6f %10.6f\n" %(staid_str,statdict[staid]['latitude'],
                                                       statdict[staid]['longitude']))
+                    else:
+                        f.write("%s\n" %staid_str)
     
     #%%
         
@@ -927,18 +893,7 @@ if __name__ == "__main__":
                 pairdict[pair]['az'] = az
                 pairdict[pair]['baz'] = baz
 
-        #banana
-        #with open("test.pkl","rb") as f:
-        #    existing_corrdays = pickle.load(f)
-        #    
-        #for pair in existing_corrdays:
-        #    for corrcomp in existing_corrdays[pair]:
-        #        existing_corrdays[pair][corrcomp] = np.array(existing_corrdays[pair][corrcomp])
-        #    
-        #with open("test2.pkl","wb") as f:
-        #    pickle.dump(existing_corrdays,f)
-            
-        
+  
         existing_files = glob.glob(os.path.join(spectra_path,"**/*.pkl"),recursive=True)
 
         

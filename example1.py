@@ -25,7 +25,7 @@ tr2 = read("preprocessed_data/VDL.LHZ.CH.2013.219.processed.SAC")[0]
 dist,az,baz = gps2dist_azimuth(tr1.stats.sac.stla,tr1.stats.sac.stlo,
                               tr2.stats.sac.stla,tr2.stats.sac.stlo)
 
-freq,xcorr = noise.noisecorr(tr1,tr2,window_length=3600.,overlap=0.5)
+freq,xcorr,n_corr_wins = noise.noisecorr(tr1,tr2,window_length=3600.,overlap=0.5)
  
 smoothed = noise.velocity_filter(freq,xcorr,dist/1000.,cmin=1.5,cmax=5.0,return_all=False)
                                     

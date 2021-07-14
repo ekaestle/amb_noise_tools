@@ -33,12 +33,13 @@ def multiprocess_fft(inlist):
         return noise.noisecorr(tr1,tr2,window_length,overlap)
     except:
         return None
-        
+
 
 if __name__ == '__main__':
     
     joblist = []
-    for jday in np.arange(365):       
+    for jday in np.arange(365):
+        
         stream1 = Stream()
         stream2 = Stream()
         
@@ -47,14 +48,22 @@ if __name__ == '__main__':
             stream2 += read("preprocessed_data/VDL*.%d.*" %jday)
         except:
             continue
+
             
-        dist,az,baz = gps2dist_azimuth(stream1[0].stats.sac.stla,stream1[0].stats.sac.stlo,
-                                       stream2[0].stats.sac.stla,stream2[0].stats.sac.stlo)
+        dist,az,baz = gps2dist_azimuth(stream1[0].stats.sac.stla,
+                                       stream1[0].stats.sac.stlo,
+                                       stream2[0].stats.sac.stla,
+                                       stream2[0].stats.sac.stlo)
+        
+        
+        st1n,st1e = noise.adapt_timespan(stream1.select(component='N'), 
+                                         stream1.select(component='E'))
+        st2n,st2e = noise.adapt_timespan(stream2.select(component='N'), 
+                                         stream2.select(component='E'))
+        
+        stream1 = stream1.select(component='Z') + st1n + st1e
+        stream2 = stream2.select(component='Z') + st2n + st2e
     
-        try:
-            stream1,stream2 = noise.adapt_timespan(stream1,stream2)
-        except:
-            continue
         # az = azimuth from station1 -> station2
         # baz = azimuth from station2 -> station1
         # for stream2 the back azimuth points in direction of station1
@@ -67,10 +76,10 @@ if __name__ == '__main__':
         tr1 = stream1.select(component='T')[0]
         tr2 = stream2.select(component='T')[0]
         
-        print("next correlation job:")
+        print("next correlation job (T-components, Love waves):")
         print(tr1)
         print(tr2)
-        print("\n\n")
+        print("\n")
 
         joblist.append([tr1,tr2,3600.,0.6])
         
@@ -92,12 +101,14 @@ if __name__ == '__main__':
     corr_spectrum/=no_spectra
     
     
-    smoothed = noise.velocity_filter(freq,corr_spectrum,dist/1000.,cmin=1.5,cmax=5.5,return_all=False)
+    smoothed = noise.velocity_filter(freq,corr_spectrum,dist/1000.,cmin=1.5,
+                                     cmax=5.5,return_all=False)
                                         
-    crossings,phase_vel = noise.get_smooth_pv(freq,smoothed,dist/1000.,ref_curve,\
-                            freqmin=0.004,freqmax=0.25, min_vel=1.5, max_vel=5.5,\
-                            filt_width=4,filt_height=0.5,x_step=0.5,pick_threshold=1.7,\
-                            horizontal_polarization=True, smooth_spectrum=False,plotting=True)
+    crossings,phase_vel = noise.get_smooth_pv(
+        freq,smoothed,dist/1000.,ref_curve,freqmin=0.004,freqmax=0.25, 
+        min_vel=1.5, max_vel=5.5,filt_width=5,filt_height=1.0,
+        pick_threshold=2.0,horizontal_polarization=True,
+        smooth_spectrum=False,plotting=True)
     
     plt.figure(figsize=(16,10))
     plt.subplot(2,2,1)

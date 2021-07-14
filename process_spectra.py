@@ -42,7 +42,7 @@ min_wavelength_criterion = 1 # don't pick data at less than one wavelength inter
 max_wavelength_criterion = 50 # don't pick data at more than x wavelengths inter-station distance
 min_vel=1.5 # minimum velocity for the desired wave type (Rayleigh/Love)
 max_vel=5.0 # maximum velocity ...
-min_common_days = 5 # recommended to be at least half a year
+min_common_days = 2 # recommended to be at least half a year
 #min_amplitude = 0.05 # minimum allowed amplitude of the cc spectrum with respect to its maximum (should be tested, otherwise set to 0)
 pick_thresh = 2.0
 horizontal_polarization=False # If True, TT or RR cross-correlations are calculated (additional J2 term). If False, only ZZ
@@ -52,7 +52,8 @@ ref_curve = np.loadtxt("Average_phase_velocity_rayleigh") # reference curve for 
 statlist_file = "./statlist.txt" # location of station list file (3 columns, statname, lat, lon)
 velocity_filter = True # do a velocity filter between min and max velocity, recommended
 check_pos_neg_lagtime_correlations = True # accept dispersion curves only if the ones picked from the positive and negative lag time cross correlations are similar
-plotresult = True
+show_pickplots = False # show plots of the zero-crossing picking procedure
+plotresult = True # create a plot and save it to the harddisk
 # SECTION ABOUNT SNR FILTERS. This is a filter applied only at the very end, discarding parts of the phase-velocity curves where the SNR is lower than a certain threshold
 # this has not been tested a lot yet. I recommend to keep the filters on False for most applications.
 # snr filters are only active in combination with the velocity filter
@@ -140,6 +141,7 @@ try:
     station2=sys.argv[2]
     statpair = True
     plotresult=True
+    show_pickplots=True
 except:
     pass
 
@@ -202,7 +204,7 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         if not (station1 in fname and station2 in fname):
             continue
         else:
-            print(fname)
+            print("\n # # # # # # # # # # # # # # # # \n",fname)
     if plotresult:
         print(fname)
     if float(i)/len(spectralist) > m*0.01:
@@ -238,40 +240,6 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
     baz = ccdict['baz']   
     dt = 1./freqax[-1]/2.
 
-#    # check whether ray runs through the Ivrea body:
-#    s = np.arange(0,dist,20) # 20 km sampling
-#    lats = np.linspace(ccdict['station1']['latitude'],ccdict['station2']['latitude'],len(s))
-#    lons = np.linspace(ccdict['station1']['longitude'],ccdict['station2']['longitude'],len(s))
-#    areacheck = False
-#    if ((lats>44.)*(lats<46.)*(lons>6.5)*(lons<8.)).any() and dist<3000.:
-#        areacheck = True
-#    else:
-#        continue
-#    if pobasin and not("po_basin" in phase_vel_path):
-#        phase_vel_path+="_po_basin"
-#        if not os.path.exists(phase_vel_path):
-#            os.makedirs(phase_vel_path)
-#    elif not(pobasin) and "po_basin" in phase_vel_path:
-#        phase_vel_path = phase_vel_path[:-9]
-
-
-#    dt = tr.stats.sac['delta']
-#    freqax = np.fft.rfftfreq(len(crosscorr),dt)
-#    id1,id2 = fname.split("/")[-1].split("--")
-#    net1,sta1,loc1,cha1 = id1.split(".")
-#    stat1 = net1+"."+sta1
-#    net2,sta2,loc2,cha2,_ = id2.split(".")
-#    stat2 = net2+"."+sta2
-#    #stat1 = fname.split("/")[-1].split(".")[0:2].join()
-#    #stat2 = fname.split("/")[-1].split(".")[2]
-#    #dist = float(fname.split("/")[-1].split("_")[4])/1000.
-#    try:
-#        dist,az,baz = gps2dist_azimuth(stat_dict[stat1][0],stat_dict[stat1][1],stat_dict[stat2][0],stat_dict[stat2][1])
-#    except:
-#        print("station information not found in statlist! aborting...")
-#        continue
-#    dist/=1000.
-    #dt = 1./spectrum[-1,0]/2.
 
     # determine min/max frequency dependent on the wavelength criteria and the
     # average wavelength (avg wavelength from reference curve)
@@ -388,15 +356,15 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
             try:
                 crossings,phase_vel = noise.get_smooth_pv(freqax,ccspec,dist,ref_curve,
                              freqmin=min_freq,freqmax=max_freq, min_vel=min_vel, max_vel=max_vel,
-                             filt_width=4,filt_height=0.5,x_step=0.5,pick_threshold=pick_thresh,
+                             filt_width=5,filt_height=1.0,pick_threshold=pick_thresh,
                            horizontal_polarization=horizontal_polarization, smooth_spectrum=not(velocity_filter),
-                           plotting=plotresult)
+                           plotting=show_pickplots)
             except:      
                 crossings,phase_vel = noise.get_smooth_pv(freqax,ccspec,dist,ref_curve,
                              freqmin=min_freq,freqmax=max_freq, min_vel=min_vel, max_vel=max_vel,
-                             filt_width=3,filt_height=0.4,x_step=0.3,pick_threshold=pick_thresh*1.2,
+                             filt_width=4,filt_height=0.8,pick_threshold=pick_thresh*1.5,
                            horizontal_polarization=horizontal_polarization, smooth_spectrum=not(velocity_filter),
-                           plotting=plotresult)            
+                           plotting=show_pickplots)            
     
             if snr_filter_frequency_domain or snr_filter_time_domain:
                 freq_filtered = np.array([])
@@ -472,9 +440,7 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         np.savetxt(os.path.join(phase_vel_path,fname.split("/")[-1]+"_curve"),phase_vel,fmt="%.5f %.3f")
     else:
         np.savetxt(os.path.join(phase_vel_path_lq+fname.split("/")[-1]+"_curve"),phase_vel,fmt="%.5f %.3f")
-        
-    counter += 1
-    
+            
     if statpair or plotresult or counter%500 == 0:
         plt.ioff()
         fig = plt.figure(figsize=(16,8))
@@ -539,6 +505,9 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
             plt.savefig("figures_zz_qcheck_failed/"+stat1+"_"+stat2+".png",bbox_inches='tight')
         plt.close(fig)
         #plt.show()
+
+    counter += 1
+
 
 #%%       
 #        plt.figure(figsize=(16,8))
