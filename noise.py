@@ -1168,24 +1168,6 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                 np.column_stack((fax_bound,v_predicted_bound+heights_bound/2.)),
                 np.column_stack((fax_bound,v_predicted_bound-heights_bound/2.))[::-1],
                 np.array([fax_bound[0],v_predicted_bound[0]+heights_bound[0]/2.])))
-
-            
-            
-            # boundary_coords = np.vstack((
-            #     np.array([[freq-width/2.,vel-slope*width/2. - heights[0]/4.],
-            #                #dv_cycle[0]*filt_height*np.cos(np.pi/2.1)],
-            #               [freq-width/2.,vel-slope*width/2. + heights[0]/4.]]),
-            #                #dv_cycle[0]*filt_height*np.cos(np.pi/2.1)]]),
-            #     np.column_stack((freqax,v_predicted+heights/2.)),
-            #     np.array([[freq+width/2.,vel+slope*width/2. + heights[-1]/4.],
-            #     #           dv_cycle[-1]*filt_height*np.cos(np.pi/2.1)],
-            #               [freq+width/2.,vel+slope*width/2. - heights[-1]/4.]]),
-            #     #           dv_cycle[-1]*filt_height*np.cos(np.pi/2.1)]]),
-            #     np.column_stack((freqax,v_predicted-heights/2.))[::-1],
-            #     #np.array([freqax[0],v_predicted[0]+heights[0]/2.])))
-            #     #np.array([freq-width/2.,vel-slope*width/2. - 
-            #     #           dv_cycle[0]*filt_height*np.cos(np.pi/2.1)])))
-            #     np.array([freq-width/2.,vel-slope*width/2. - heights[0]/4.])))
                     
         poly_weight_ind = np.empty((0,),dtype=int)
         poly_weights = np.empty((0,))
