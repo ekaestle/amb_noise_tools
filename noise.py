@@ -1047,9 +1047,6 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         cross_idx = np.where(uniqueidx==freq_idx)[0]
         cross = crossings[cross_idx]
         
-        # slope of the reference curve
-        slope_ref = ((reference_curve_func(freq+0.01) - 
-                      reference_curve_func(freq-0.01))/0.02)
         fstep = reference_velocity/(2*interstation_distance)
         dvcycle = dv_cycle_jump(freq,reference_velocity,interstation_distance)
 
@@ -1059,11 +1056,14 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         vel = cross[closest_idx,1]
 
         if slope is None:
+            # slope of the reference curve
+            slope_ref = ((reference_curve_func(freq+0.01) - 
+                          reference_curve_func(freq-0.01))/0.02)
             slope = slope_ref
 
         # test a couple of different slopes that may vary between the last
-        # slope minus 0.3 cycle jumps and zero 
-        test_slopes = np.arange(slope-0.3*dvcycle/(width/2.*fstep),0,1)
+        # slope minus 0.1 cycle jumps and zero 
+        test_slopes = np.arange(slope-0.1*dvcycle/(width/2.*fstep),0,1)
     
         if len(test_slopes)==0:
             test_slopes = [0.]
@@ -1116,7 +1116,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         # at the main branch, set the previously determined optimal slope
         cross_slopes[closest_idx] = best_slope
 
-        return cross_slopes, cross_idx, vel
+        return cross_slopes, cross_idx, vel, best_slope
  
     
     def get_kernel(X,Y,freq,vel,slope,interstation_distance,
@@ -1168,6 +1168,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                 np.column_stack((fax_bound,v_predicted_bound+heights_bound/2.)),
                 np.column_stack((fax_bound,v_predicted_bound-heights_bound/2.))[::-1],
                 np.array([fax_bound[0],v_predicted_bound[0]+heights_bound[0]/2.])))
+
                     
         poly_weight_ind = np.empty((0,),dtype=int)
         poly_weights = np.empty((0,))
@@ -1265,7 +1266,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         npicks_jumped = 0
         
         # number of picks to use for prediction
-        no_test_picks = np.max([3,int(3/x_step)])
+        no_test_picks = np.max([3,int(2.5/x_step)])
         
         # CHECK 1: IS THERE A CYCLE JUMP BETWEEN THE LAST PICK AND THE ONE THREE CYCLES BEFORE?
         if len(picks) > no_test_picks:
@@ -1278,7 +1279,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
             testslope = np.mean(slope_history[-no_test_picks-5:-no_test_picks+1])
                         
             testpicks = pickarray[-no_test_picks:]
-            dfreq,dv = testpicks[-1] - testpicks[0]
+            dfreq,dv,_ = testpicks[-1] - testpicks[0]
             dv_cycle = np.mean([dv_cycle_jump(testpicks[-1,0],testpicks[-1,1],interstation_distance),
                                 dv_cycle_jump(testpicks[0,0],testpicks[0,1],interstation_distance)])
             
@@ -1458,6 +1459,11 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
             if len(picks)>0:
             
                 # quality checking current pick
+                if maxamp/picks[-1][2] < 0.8:
+                    if verbose:
+                        print("    %.3f: amplitude of pick too low" %frequency)
+                    return picks
+                
                 maximum_allowed_velocity_reduction = (
                     -0.3*dvcycle + np.min([dv_ref, dv_predicted]) )
                 maximum_allowed_velocity_increase = ( 
@@ -1489,7 +1495,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                                                     maximum_allowed_velocity_increase))
                     return picks
             
-            picks.append([frequency,vpick])
+            picks.append([frequency,vpick,maxamp])
        
         else:
             if verbose:
@@ -1565,6 +1571,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
     sampling = 20
     slope = None
     cross_vel = None
+    cross_slope = None
     if plotting:
         ellipse_paths = []
       
@@ -1600,6 +1607,8 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
     #freq_pick = np.min(w_axis)
     #idx_pick = 0
     idx_pick = 0
+    
+    idx_plot = []
     
     ##########################################################################
     # OUTER LOOP FOR PICKING THE VELOCITIES
@@ -1690,9 +1699,9 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                
             # find the most likely slope associated to each zero crossing
             # these slopes are used to rotate the elliptical kernels
-            cross_slopes,cross_idx,cross_vel = get_zero_crossing_slopes(
-                crossings,freq_kernel,reference_velocity,slope,filt_width,
-                reference_curve_func,interstation_distance)
+            cross_slopes,cross_idx,cross_vel,cross_slope = get_zero_crossing_slopes(
+                crossings,freq_kernel,reference_velocity,cross_slope,
+                filt_width,reference_curve_func,interstation_distance)
             crossings[cross_idx,2] = cross_slopes
             
             # add the kernel weights
@@ -1710,7 +1719,9 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                 reference_velocity/(2*interstation_distance),
                 filt_width,filt_height,
                 interstation_distance,idx_plot=idx_plot)
-            ellipse_paths += ell_paths
+            
+            if plotting:
+                ellipse_paths += ell_paths
             
             idx_kernel += 1
     
