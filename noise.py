@@ -7,6 +7,12 @@ Autor: Emanuel Kaestle (emanuel.kaestle@fu-berlin.de)
 
 # # # Updates # # #
 
+Updated September 2021
+- The adapt timespan function has been rewritten to work in more general cases.
+  The function performs more checks and provides more options to correct for
+  subsample timeshifts.
+- get_smooth_pv has been slightly improved to yield more stable results.
+
 Updated July 2021
 - The time shift correction has been removed from the cross correlation function.
   The problem of potential time shifts is now solved with the updated 
@@ -31,7 +37,7 @@ from scipy.stats import linregress
 from scipy.signal import detrend
 from obspy.signal.invsim import cosine_taper
 from scipy.signal import find_peaks
-from obspy.core import Stream
+from obspy.core import Stream, Trace
 import matplotlib.pyplot as plt
 from scipy.interpolate import LSQUnivariateSpline
 from scipy.optimize import curve_fit
@@ -49,102 +55,332 @@ def running_mean(x, N):
         runmean[-i-1] = np.mean(x[-2*i-1:])
     return runmean
 
+
 ##############################################################################
-def adapt_timespan(st1,st2,min_overlap=0.,interpolate=True):
+def adapt_timespan(st1,st2=None,min_overlap=0.,correct_timeshift=True,
+                   interpolate=False,copystreams=True):
     """
-    Slices all traces from the two input streams to the overlapping timerange.
-    Returns a copy of the sliced streams.\n
+    Slices traces from the input to the time ranges where all traces of
+    different ids overlap. Traces with identical ids do not need to overlap. 
+    Returns the sliced streams.\n
+    If only one input stream is provided, the output is also just one stream.
+    The result of one joint input stream or two input streams is in general
+    identical, unless st1 and st2 contain traces with identical ids.
+    Overlapping traces of identical ids are not allowed if they are in the same
+    input stream and are automatically cut. This does not happen if they are
+    in separate input streams.\n
     If the starttime of the sliced traces do not fit exactly (because of sub-
-    sample time shifts), the traces are interpolated to remove this time shift.
-    If there is no common time range a warning is printed.\n  
+    sample time shifts), the traces can be shifted or interpolated to correct
+    for this time shift. Simple shifting will introduce a subsample timing 
+    error.\n
+    
+    Example:\n
+    st1, 4 Traces in Stream, first two traces have an overlap:\n
+        NE.STA1..Z | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:59.000000Z
+        | 1.0 Hz, 3600 samples\n
+        NE.STA1..Z | 2000-01-01T00:51:39.000000Z - 2000-01-01T01:30:00.000000Z
+        | 1.0 Hz, 2302 samples\n
+        NE.STA1..N | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:59.000000Z 
+        | 1.0 Hz, 3600 samples\n
+        NE.STA1..E | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:59.000000Z
+        | 1.0 Hz, 3600 samples\n
+    
+    st2, 2 Traces in Stream, quarter sample shifted from the full second:\n
+        NE.STA1..Z | 2000-01-01T00:10:03.250000Z - 2000-01-01T00:40:02.250000Z 
+        | 1.0 Hz, 1800 samples\n
+        NE.STA1..Z | 2000-01-01T00:43:22.250000Z - 2000-01-01T01:10:01.250000Z 
+        | 1.0 Hz, 1600 samples\n
+    
+    There are two common time windows (00:10:03.25 - 00:40:01.25 and 
+    00:43:22.25 - 00:59:58.25):\n
+    
+    st1_out, 6 Traces in Stream:\n
+        NE.STA1..Z | 2000-01-01T00:10:03.250000Z - 2000-01-01T00:40:01.250000Z 
+        | 1.0 Hz, 1799 samples\n
+        NE.STA1..N | 2000-01-01T00:10:03.250000Z - 2000-01-01T00:40:01.250000Z
+        | 1.0 Hz, 1799 samples\n
+        NE.STA1..E | 2000-01-01T00:10:03.250000Z - 2000-01-01T00:40:01.250000Z
+        | 1.0 Hz, 1799 samples\n
+        NE.STA1..Z | 2000-01-01T00:43:22.250000Z - 2000-01-01T00:59:58.250000Z
+        | 1.0 Hz, 997 samples\n
+        NE.STA1..N | 2000-01-01T00:43:22.250000Z - 2000-01-01T00:59:58.250000Z
+        | 1.0 Hz, 997 samples\n
+        NE.STA1..E | 2000-01-01T00:43:22.250000Z - 2000-01-01T00:59:58.250000Z
+        | 1.0 Hz, 997 samples\n
+    
+    st2_out, 2 Traces in Stream:\n
+        NE.STA1..Z | 2000-01-01T00:10:03.250000Z - 2000-01-01T00:40:01.250000Z
+        | 1.0 Hz, 1799 samples\n
+        NE.STA1..Z | 2000-01-01T00:43:22.250000Z - 2000-01-01T00:59:58.250000Z
+        | 1.0 Hz, 997 samples\n
+    
+    Please note that the result would be different if all the traces were put
+    into the same stream and st2=None. This is because of the identical trace
+    ids of the Z component:\n
+    
+    st1, 6 Traces in Stream (st2=None):\n
+        NE.STA1..Z | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:59.000000Z
+        | 1.0 Hz, 3600 samples\n
+        NE.STA1..Z | 2000-01-01T00:10:03.250000Z - 2000-01-01T00:40:02.250000Z
+        | 1.0 Hz, 1800 samples\n
+        NE.STA1..Z | 2000-01-01T00:43:22.250000Z - 2000-01-01T01:10:01.250000Z
+        | 1.0 Hz, 1600 samples\n
+        NE.STA1..Z | 2000-01-01T01:00:01.000000Z - 2000-01-01T01:30:00.000000Z
+        | 1.0 Hz, 1800 samples\n
+        NE.STA1..N | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:59.000000Z
+        | 1.0 Hz, 3600 samples\n
+        NE.STA1..E | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:59.000000Z
+        | 1.0 Hz, 3600 samples\n
+    
+    Output:\n
+    st1_out, 3 Traces in Stream:\n
+        NE.STA1..E | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:58.000000Z
+        | 1.0 Hz, 3599 samples\n
+        NE.STA1..N | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:58.000000Z
+        | 1.0 Hz, 3599 samples\n
+        NE.STA1..Z | 2000-01-01T00:00:00.000000Z - 2000-01-01T00:59:58.000000Z
+        | 1.0 Hz, 3599 samples\n
 
     Parameters
     ----------
-    st1 : `~obspy.core.stream`
-        Obspy stream object containing the first stream whose traces should
-        be sliced to the common time range(s).
-    st2 : `~obspy.core.stream`
-        Obspy stream object containing the second stream whose traces should
-        be sliced to the common time range(s).
+    st1 : `~obspy.core.stream` or `~obspy.core.trace`
+        Obspy stream or trace object containing the first stream whose traces
+        should be sliced to the common time range(s).
+    st2 : `~obspy.core.stream` or `~obspy.core.trace`
+        Obspy stream or trace object containing the second stream whose traces
+        should be sliced to the common time range(s).
     min_overlap : float, optional
         The minimum overlap in seconds for two traces. Shorter overlapping
         traces are ignored. The default is 0.
+    correct_timeshift : BOOL, optional
+        If set to 'True', the starttimes among all traces are being adapted
+        so that subsample time shifts are removed. May not work properly if
+        the sampling rates differ between traces. The default is True.
     interpolate : BOOL, optional
-        If set to True, subsample time shifts are correced by interpolation.
-        The default is True.
+        If set to 'True', subsample time shifts are corrected by interpolating
+        the traces. Otherwise, the traces are just shifted by a subsample time
+        shift, if necessary. The default is False.
+    copystreams : BOOL, optional
+        If set to 'True', a copy of the input streams is returned, otherwise,
+        the function acts on the streams directly. The default is True.
 
     Raises
     ------
-    Exception
-        Exception is raised if one of the input streams is empty.
+    Warning
+        A warning is raised if the sampling rates are different between traces.
 
     Returns
     -------
     st1_out : `~obspy.core.stream`
-        Obspy stream object containing a copy of the overlapping, sliced
+        Obspy stream object containing the overlapping, sliced
         traces of st1.
     st2_out : `~obspy.core.stream`
-        Obspy stream object containing a copy of the overlapping, sliced
+        If two input streams were provided, returns the overlapping, sliced
         traces of st2.
     """
+    
+    if interpolate and not correct_timeshift:
+        print("Warning: the interpolate option works only with correct_timeshift=True")
+    
+    st1 = Stream(st1) if isinstance(st1, Trace) else st1
+    
+    if st2 is None:
+        # create a dummy trace
+        starttime = min([tr.stats.starttime for tr in st1])
+        endtime = max([tr.stats.endtime for tr in st1])        
+        st2 = Trace()
+        st2.stats.starttime = starttime
+        st2.stats.sampling_rate = st1[0].stats.sampling_rate
+        st2.data = np.zeros(int(st2.stats.sampling_rate * (endtime-starttime)),
+                            dtype=int)
+        single_stream = True
+    else:
+        single_stream = False
+    
+    st2 = Stream(st2) if isinstance(st2, Trace) else st2
+    
+    if single_stream and len(st1)==0:
+        return Stream()
+    elif len(st2)==0:
+        return Stream(),Stream()
 
-
-    if len(st1) == 0:
-        raise Exception('Stream 1 is empty')
-    if len(st2) == 0:
-        raise Exception('Stream 2 is empty')
+    # if the sampling rate is not identical, it may not be possible to cut
+    # the streams to exactly the same time ranges
+    min_sampling_rate = st1[0].stats.sampling_rate
+    for trace in (st1+st2):
+        if trace.stats.sampling_rate != min_sampling_rate:
+            raise Warning("Not all traces have the same sampling rate, this "+
+                          "may lead to unexpected results!")
+            min_sampling_rate = np.min([min_sampling_rate,
+                                        trace.stats.sampling_rate])
+    # we require at least 3 samples overlap to avoid some unwanted effects
+    min_overlap = np.max([min_overlap+1./min_sampling_rate,
+                          3*1./min_sampling_rate])
+            
+    if copystreams:
+        stream1 = st1.copy()
+        stream2 = st2.copy()
+    else:
+        stream1 = st1
+        stream2 = st2
+      
+    # merge overlapping traces of same ids if they have identical 
+    # data and sampling
+    stream1._cleanup()  
+    stream2._cleanup()
+      
+    # get the different trace ids and remove too short traces
+    ids1 = []
+    for trace in stream1:
+        if trace.stats.endtime-trace.stats.starttime < min_overlap:
+            stream1.remove(trace)
+        elif not trace.id in ids1:
+            ids1.append(trace.id)
+    ids2 = []
+    for trace in stream2:
+        if trace.stats.endtime-trace.stats.starttime < min_overlap:
+            stream2.remove(trace)
+        elif not trace.id in ids2:
+            ids2.append(trace.id)            
+    
+    ids = ids1+ids2
+    
+    if single_stream and len(st1)==0:
+        return Stream()
+    elif len(st2)==0:
+        return Stream(),Stream()
+    
+    # remove overlapping traces of same trace-id within each stream
+    for traceid in ids1:
+        traces = stream1.select(id=traceid)
+        traces = traces.sort()
+        endtime = traces[0].stats.starttime
+        for trace in traces:
+            if trace.stats.starttime < endtime: # overlap
+                trace.trim(starttime=endtime,nearest_sample=False)
+                if len(trace)==0:
+                    stream1.remove(trace)
+                    continue
+            endtime = trace.stats.endtime + 2./trace.stats.sampling_rate
+    for traceid in ids2:
+        traces = stream2.select(id=traceid)
+        traces = traces.sort()
+        endtime = traces[0].stats.starttime
+        for trace in traces:
+            if trace.stats.starttime < endtime: # overlap
+                trace.trim(starttime=endtime,nearest_sample=False)
+                if len(trace)==0:
+                    stream2.remove(trace)
+                    continue
+            endtime = trace.stats.endtime + 2./trace.stats.sampling_rate
+                
+    # get the gaps in all streams, these will be cut out later
+    gaps1 = stream1.get_gaps()
+    for gap in gaps1:
+        if gap[-1] < 0:
+            raise Exception("there should be no overlaps in stream1")
+    gaps2 = stream2.get_gaps()
+    for gap in gaps2:
+        if gap[-1] < 0:
+            raise Exception("there should be no overlaps in stream2")
+    gaps = gaps1+gaps2
+            
+    # find the overall common time range (latest starttime from all ids to
+    # earliest endtime from all ids)
+    starttimes = []
+    endtimes = []
+    for traceid in ids:
+        traces = (stream1+stream2).select(id=traceid)
+        starttimes.append(min([tr.stats.starttime for tr in traces]))
+        endtimes.append(max([tr.stats.endtime for tr in traces]))
+            
+    starttime = max(starttimes)
+    endtime = min(endtimes)
+    
+    if starttime+min_overlap >= endtime:
+        if single_stream:
+            return Stream()
+        else:
+            return Stream(),Stream()
+    
+    # find timeranges that overlap
+    overlapping_timeranges = [(starttime,endtime)]
+    for gap in gaps:
+        timeranges_updated = []
+        gapstart = gap[4]
+        gapend = gap[5]
+        for timerange in overlapping_timeranges:
+            # gap is larger than timerange:
+            if gapstart<=timerange[0] and gapend>=timerange[1]:
+                continue
+            # gap is inside timerange
+            if gapstart>timerange[0] and gapend<timerange[1]:
+                timeranges_updated += [(timerange[0],gapstart),
+                                       (gapend,timerange[1])]
+            # gap overlaps with the beginning of the timerange
+            elif gapstart<=timerange[0] and gapend>timerange[0]:
+                timeranges_updated += [(gapend,timerange[1])]
+            # gap overlaps with the end of the timerange
+            elif gapstart<timerange[1] and gapend>=timerange[1]:
+                timeranges_updated += [(timerange[0],gapstart)]
+            # gap does not overlap at all
+            else:
+                timeranges_updated += [timerange]
+                         
+        # make sure that the timeranges are at least min_overlap long
+        overlapping_timeranges = []
+        for timerange in timeranges_updated:
+            if timerange[1]-timerange[0] >= min_overlap:
+                overlapping_timeranges.append(timerange)
         
+
+    # cut out the timeranges from the stream objects
     st1_out = Stream()
     st2_out = Stream()
+    for timerange in overlapping_timeranges:
         
-    for tr1 in st1:
-        for tr2 in st2:
-            
-            if tr1.stats.starttime > tr2.stats.starttime:
-                tstart = tr1.stats.starttime
-            else:
-                tstart = tr2.stats.starttime
-            if tr1.stats.endtime > tr2.stats.endtime:
-                tend = tr2.stats.endtime
-            else:
-                tend = tr1.stats.endtime
-
-            # traces with overlapping time range found
-            if tend >= tstart + min_overlap:
-                tr1=tr1.slice(tstart,tend).copy()
-                tr2=tr2.slice(tstart,tend).copy()
+            slice1 = stream1.slice(timerange[0],timerange[1])
+            slice2 = stream2.slice(timerange[0],timerange[1])
+        
+            if correct_timeshift:
                 
-                # check if the two traces start and end at the same sample
-                if tr1.stats.starttime != tr2.stats.starttime:
+                if interpolate:
                     
-                    if interpolate:
+                    starttime = max([tr.stats.starttime for tr in slice1]+
+                                    [tr.stats.starttime for tr in slice2])
+                    for trace in (slice1+slice2):
+                        if ( np.std(trace.data)!=0 and 
+                             trace.stats.starttime!=starttime ):
+                            trace.interpolate(trace.stats.sampling_rate,
+                                              starttime=starttime)
+                        else:
+                            trace.stats.starttime = starttime
+                            
+                else:
                     
-                        tstart = np.max([tr1.stats.starttime,tr2.stats.starttime])
-                        tr1.interpolate(tr1.stats.sampling_rate,starttime=tstart)
-                        tr2.interpolate(tr2.stats.sampling_rate,starttime=tstart)
-                        # slice again
-                        tend = np.min([tr1.stats.endtime,tr2.stats.endtime])
-                        if tend < tstart + min_overlap:
-                            continue
-                        tr1 = tr1.slice(starttime=tstart,endtime=tend)
-                        tr2 = tr2.slice(starttime=tstart,endtime=tend)
+                    for trace in (slice1+slice2):
+                        trace.stats.starttime = timerange[0]
                         
-                    else:
-                        print("Warning: traces in stream have a subsample " +
-                              "time shift. This can be corrected for with " +
-                              "the option interpolate=True.")
-                    
-                st1_out += tr1
-                st2_out += tr2
+                
+                endtime = min([tr.stats.endtime for tr in slice1]+
+                              [tr.stats.endtime for tr in slice2])                
+                # if correct_timeshift, slice again to make sure that the
+                # end sample is also identical
+                slice1 = slice1.slice(timerange[0],endtime)
+                slice2 = slice2.slice(timerange[0],endtime)
+                
+                
+            st1_out += slice1
+            st2_out += slice2
+            
+            
+    if single_stream:
+        return st1_out
+    else:
+        return st1_out,st2_out
 
 
-    if len(st1_out)==0:
-        print("Warning: No common time range")
-        
-    return st1_out,st2_out
-        
-
-
+##############################################################################
 def freq_to_time_domain(spectrum,f):
     """
     Converts the (cross-correlation) spectrum back to the time domain.\n
@@ -174,7 +410,7 @@ def freq_to_time_domain(spectrum,f):
 ##############################################################################
 def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
               onebit=False,whiten=True, waterlevel=1e-10,cos_taper=True,\
-              taper_width=0.05):
+              taper_width=0.05,subsample_timeshift_interpolation=True):
     """
     Correlates trace1 and trace2 and returns the summed correlation function
     in the frequency domain.\n
@@ -209,7 +445,10 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
     :param taper_width: Decimal percentage of cosine taper (ranging from 0 to
         1). Default is 0.05 (5%) which tapers 2.5% from the beginning and 2.5%
         from the end.
-    
+    :type subsample_timeshift_interpolation: bool
+    :param subsample_timeshift_interpolation: If ``True`` traces will be 
+        interpolated to correct for subsample time shifts, if necessary.
+        
     :rtype: :class:`~numpy.ndarray`
     :return: **freq, corr_spectrum, nwins** - The frequency axis, the stacked
         cross-correlation spectrum and the number of windows used for stacking.
@@ -222,7 +461,8 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
     if np.std(trace2.data)==0.:
         print("Warning: trace2 is flat!")
     
-    st1,st2=adapt_timespan(Stream(trace1),Stream(trace2))
+    st1,st2=adapt_timespan(trace1,trace2,correct_timeshift=True,
+                           interpolate=subsample_timeshift_interpolation)
     tr1=st1[0]
     tr2=st2[0]
     if ((tr1.stats.endtime - tr1.stats.starttime) < window_length or
@@ -889,7 +1129,7 @@ def extract_phase_velocity(frequencies,corr_spectrum,interstation_distance,ref_c
  #%%###################################################################
 def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                   freqmin=0.0,freqmax=99.0, min_vel=1.0, max_vel=5.0,
-                  filt_width=4,filt_height=0.8,x_step=None,
+                  filt_width=7,filt_height=0.8,x_step=None,
                   pick_threshold=2.,
                   horizontal_polarization=False, smooth_spectrum=False,
                   plotting=False):
@@ -1040,13 +1280,16 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         """
         This function attributes a slope to each zero crossing. The slopes are
         chosen such that they point in the direction of adjacent zero crossings
+        
+        In the plots, these slopes appear as little yellow lines behind each
+        zero crossing.
         """
            
         crossfreq,uniqueidx = np.unique(crossings[:,0],return_inverse=True)
         freq_idx = np.where(crossfreq==freq)[0]
         cross_idx = np.where(uniqueidx==freq_idx)[0]
         cross = crossings[cross_idx]
-        
+                   
         fstep = reference_velocity/(2*interstation_distance)
         dvcycle = dv_cycle_jump(freq,reference_velocity,interstation_distance)
 
@@ -1102,16 +1345,17 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         
         dv = ((vel+cycle_count*dvcycle2) - 
               (vel+cycle_count*dvcycle1))
-        cross_slopes = dv/(width/2.*fstep) + best_slope
+        cross_slopes = dv/(width*fstep) + best_slope
         
-        maxslope = (0.5*dv_cycle_jump(freq,cross[:,1],interstation_distance) / 
-                    (width/2.*fstep))
+        # make sure the slopes are not too large (more than one cycle jump
+        # over 3 frequency steps)
+        maxslope = (dv_cycle_jump(freq,cross[:,1],interstation_distance) / 
+                    (3.*fstep))
         mod_idx = np.abs(cross_slopes) > np.abs(maxslope)
         cross_slopes[mod_idx] = maxslope[mod_idx]*np.sign(cross_slopes[mod_idx])
         
-        # avoid steep slopes. this has most effect on the branches far away
-        # from the reference velocity
-        cross_slopes *= 0.5
+        # reduce positive slopes that are probably wrong
+        cross_slopes[cross_slopes>0] *= 0.5
         
         # at the main branch, set the previously determined optimal slope
         cross_slopes[closest_idx] = best_slope
@@ -1144,13 +1388,15 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         width = fstep*filt_width
         # sample the ellipse at the frequencies where X has sample points
         freqax = np.unique(X[(X<=freq+width/2.)*(X>=freq-width/2.)])
+        # theoretical width of the kernel relative to the actual width
+        factor = width/(freqax[-1]-freqax[0])
         # along the frequency axis, the weights are 1 at the zero crossing
         # and decrease to 0 towards the edges of the freqax
-        xweights = np.sqrt(np.abs(np.cos((freq-freqax)/(width/2.)*np.pi/2.)))
+        xweights = np.abs(np.cos((freq-freqax)/(width/2.)*np.pi/2.))
         # predicted velocities along the frequency axis
         v_predicted = vel+slope*(freqax-freq)
         # predicted distance between cycles along the frequency axis
-        dv_cycle = dv_cycle_jump(freqax,v_predicted,interstation_distance)
+        dv_cycle = dv_cycle_jump(freqax,vel,interstation_distance)
         # the height of the ellipse is maximum around the zero crossing
         # and decreases to zero towards the edges of the freqax
         heights = dv_cycle*filt_height*xweights
@@ -1182,6 +1428,10 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                 yweights[y_ind] = np.cos(y*np.pi/2.)[y_ind] * xweights[f_ind]
                 poly_weight_ind = np.append(poly_weight_ind,x_ind)
                 poly_weights = np.append(poly_weights,yweights)
+           
+        # compensate for boundary effects
+        # this increases the weights at the boundaries and reduces the bias
+        poly_weights *= (1+factor)/2.
                 
         return boundary_coords,poly_weight_ind,poly_weights
         
@@ -1263,11 +1513,17 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                              interstation_distance,verbose=False):
         
         # QUALITY CHECKING PREVIOUS PICKS        
-        npicks_jumped = 0
+        total_picks_jumped = 0
         
         # number of picks to use for prediction
         no_test_picks = np.max([3,int(2.5/x_step)])
         
+        if len(picks_backup)>1 and len(picks)>=1:
+            if (np.abs(picks_backup[-1][1] - picks[0][1]) > 
+                dv_cycle_jump(picks[0][0], picks[0][1], interstation_distance)):
+                picks = []
+                return picks,picks_backup,slope,total_picks_jumped
+            
         # CHECK 1: IS THERE A CYCLE JUMP BETWEEN THE LAST PICK AND THE ONE THREE CYCLES BEFORE?
         if len(picks) > no_test_picks:
             
@@ -1317,20 +1573,25 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         if len(picks) > 0:
             idx0 = np.where(picks[0][0]==freqax_picks)[0][0]
             idxpick = np.where(frequency==freqax_picks)[0][0]
-            total_picks_jumped = len(freqax_picks[idx0:idxpick]) - len(picks)
+            missing_indices = np.in1d(freqax_picks[idx0:idxpick],
+                                      np.array(picks)[:,0],assume_unique=True,
+                                      invert=True)
+            total_picks_jumped = np.sum(missing_indices)
             # if the total number of jumped picks is too large, abort
             if ((total_picks_jumped > no_test_picks) or 
-                (total_picks_jumped > no_test_picks/3. and len(picks) < no_test_picks)):
+                (total_picks_jumped > no_test_picks/3. and len(picks) < no_test_picks) or
+                (total_picks_jumped >= 1 and len(picks) <= 1) or
+                (missing_indices[-int(np.ceil(no_test_picks/2.)):]).all()):
                 if verbose:
                     print("    %.3f: %d picks were not made, data quality too poor." 
                           %(frequency,total_picks_jumped))
                     print("    restarting")
-                if len(picks_backup)<len(picks):
+                if len(picks_backup)*2<len(picks):
                     picks_backup = picks # save a copy of "bad" picks
                 picks = []
-                return picks,picks_backup,slope,npicks_jumped      
+                return picks,picks_backup,slope,total_picks_jumped      
 
-        return picks,picks_backup,slope,npicks_jumped
+        return picks,picks_backup,slope,total_picks_jumped
         
     
     
@@ -1384,13 +1645,17 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
         
         velocities, weights = densities
         
+        # bit of smoothing 
+        # to avoid that there are small density maxima very close to each other
+        weights = running_mean(weights,7)
+        
         # picks are made where there is a maximum in the density array
         idxmax = find_peaks(weights)[0] #all indices of maxima 
         if len(idxmax)==0:
             return picks
         # don't pick anything, if there are only maxima below the reference 
-        # curve, unless the velocity difference is less than 10%
-        if np.max(velocities[idxmax]) < 0.9*reference_curve_func(frequency):
+        # curve, unless the velocity difference is less than 20%
+        if np.max(velocities[idxmax]) < 0.8*reference_curve_func(frequency):
             return picks
         
         no_start_picks /= x_step
@@ -1459,7 +1724,8 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
             if len(picks)>0:
             
                 # quality checking current pick
-                if maxamp/picks[-1][2] < 0.8:
+                if (maxamp/np.mean(np.array(picks)[-int(4/x_step):,2]) < 0.5 and 
+                    len(picks)>no_start_picks):
                     if verbose:
                         print("    %.3f: amplitude of pick too low" %frequency)
                     return picks
@@ -1477,8 +1743,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                 if len(picks) <= no_start_picks and frequency < 1./30:
                     # at long periods, increasing velocities are very unlikely
                     maximum_allowed_velocity_increase *= 0.05
-                
-                
+                                
                 if vpick-picks[-1][1] < maximum_allowed_velocity_reduction:
                     if verbose:
                         print("    %.3f: velocityjump to lower velocities too large" %frequency)
@@ -1687,16 +1952,14 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
             # the reference velocity is needed to find the optimal rotation
             # angles for the elliptical kernels
             if len(picks)<1:
-                if cross_vel is None:
-                    reference_velocity = reference_curve_func(freq_kernel)
-                else:
+                reference_velocity = reference_curve_func(freq_kernel)
+                if cross_vel is not None and idx_kernel>2:
                     reference_velocity = cross_vel
             else:
                 reference_velocity = (picks[-1][1] + np.mean([
-                    slope*(freq_kernel-picks[-1][0]),
-                    reference_curve_func(freq_kernel)-
-                    reference_curve_func(picks[-1][0])]) )
-               
+                     slope*(freq_kernel-picks[-1][0]),
+                     reference_curve_func(freq_kernel)-
+                     reference_curve_func(picks[-1][0])]) )
             # find the most likely slope associated to each zero crossing
             # these slopes are used to rotate the elliptical kernels
             cross_slopes,cross_idx,cross_vel,cross_slope = get_zero_crossing_slopes(
@@ -1719,6 +1982,17 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                 reference_velocity/(2*interstation_distance),
                 filt_width,filt_height,
                 interstation_distance,idx_plot=idx_plot)
+            
+            # smooth the density field before picking to avoid that there are
+            # small density maxima very close to each other
+            # vertical smoothing
+            #density[freq_kernel==X] = running_mean(density[freq_kernel==X],int(sampling/3))
+            # # and a bit of lateral smoothing
+            # if idx_pick > 0:
+            #     density_before = np.interp(X[freq_kernel==X],
+            #                                 X[w_axis[idx_kernel-1]==X],
+            #                                 density[w_axis[idx_kernel-1]==X])
+            #     density[freq_kernel==X] = 0.8*density[freq_kernel==X] + 0.2*density_before
             
             if plotting:
                 ellipse_paths += ell_paths
@@ -1745,13 +2019,14 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
             reference_curve_func, verbose=plotting)
     
         # check if there are already picks made, if yes, do a quality check
-        picks_jumped = 0
         picks,picks_backup,slope,picks_jumped = check_previous_picks(
             picks,picks_backup,freq_pick,slope,min_vel,max_vel,
             reference_curve_func,gridaxis,interstation_distance,
             verbose=plotting)
-            
-            
+        if len(picks)==0 and picks_jumped>0:
+            idx_pick -= picks_jumped
+            continue
+                           
         # check that the parallel phase velocity branches are well separated
         # for taking the first picks. otherwise do not take a first pick
         if len(picks)<3:
@@ -1764,17 +2039,6 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
                           %(dv_cycle, ref_curve[0,1]-reference_velocity))
                     print("    %.3f: cycles are too close, stopping" %freq_pick)
                 break # terminate picking
-
-        # smooth the density field before picking to avoid that there are
-        # small density maxima very close to each other
-        # vertical smoothing
-        density[freq_pick==X] = running_mean(density[freq_pick==X],int(sampling/4))
-        # and a bit of lateral smoothing
-        if idx_pick > 0:
-            density_before = np.interp(X[freq_pick==X],
-                                       X[gridaxis[idx_pick-1]==X],
-                                       density[gridaxis[idx_pick-1]==X])
-            density[freq_pick==X] = 0.8*density[freq_pick==X] + 0.2*density_before
         
         # weights at the current frequency where the next pick will be taken
         # Y array contains the velocities along the y axis and weights the
@@ -1793,7 +2057,7 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
 
 
     # CHECK IF THE BACKUP PICKS ("BAD" ONES DISCARDED BEFORE) HAVE THE BETTER COVERAGE
-    if len(picks_backup)>len(picks):
+    if len(picks_backup)*2>len(picks):
         picks = picks_backup
 
     # SMOOTH PICKED PHASE VELOCITY CURVE

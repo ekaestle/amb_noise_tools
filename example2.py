@@ -55,14 +55,16 @@ if __name__ == '__main__':
                                        stream2[0].stats.sac.stla,
                                        stream2[0].stats.sac.stlo)
         
+        # cut the horizontal components to the same time range
+        # this is necessary to rotate the components (NE->RT)
+        # and to make sure that only overlapping time ranges are correlated
+        st1 = (stream1.select(component='N') + stream1.select(component='E'))
+        st2 = (stream2.select(component='N') + stream2.select(component='E'))
+        st1,st2 = noise.adapt_timespan(st1,st2)
         
-        st1n,st1e = noise.adapt_timespan(stream1.select(component='N'), 
-                                         stream1.select(component='E'))
-        st2n,st2e = noise.adapt_timespan(stream2.select(component='N'), 
-                                         stream2.select(component='E'))
-        
-        stream1 = stream1.select(component='Z') + st1n + st1e
-        stream2 = stream2.select(component='Z') + st2n + st2e
+        # we add the Z component again (not really necessary)
+        stream1 = stream1.select(component='Z') + st1 
+        stream2 = stream2.select(component='Z') + st2
     
         # az = azimuth from station1 -> station2
         # baz = azimuth from station2 -> station1
@@ -81,7 +83,9 @@ if __name__ == '__main__':
         print(tr2)
         print("\n")
 
-        joblist.append([tr1,tr2,3600.,0.6])
+        # joblist contains the arguments for the cross correlation, i.e.
+        # trace1, trace2, correlation window (1hr=3600s) and the window overlap (0.5=50%)
+        joblist.append([tr1,tr2,3600.,0.5])
         
     print("starting FFT with",no_cores,"cores")
     p = Pool(no_cores)

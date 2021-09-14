@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 """
+Updated September 2021
+- adapted to be compatible with the new noise.adapt_timespan function
+
 Updated June 2021
 - script makes sure now that the horizontal traces are sampled at the same points in time
   if there is a large subsample time shift. Before, this would result in an error.
@@ -118,7 +121,8 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
             return None
             
         stream1,stream2 = noise.adapt_timespan(stream1, stream2,
-                                               min_overlap=window_length)
+                                               min_overlap=window_length,
+                                               interpolate=True)
         if len(stream1) != len(stream2):
             raise Exception("this should be impossible")
             
@@ -165,8 +169,9 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 continue
             
             #try:
-            freq,spec,wincount = noise.noisecorr(st1[0],st2[0],window_length,overlap,
-                                                  whiten=whiten,onebit=onebit)
+            freq,spec,wincount = noise.noisecorr(st1[0],st2[0],window_length,
+                                                 overlap,whiten=whiten,
+                                                 onebit=onebit)
             corr_list.append(spec)
             no_windows.append(wincount)
             #except:
@@ -246,44 +251,37 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
         
  
 
-    if 'TT' in corrcomp or 'RR' in corrcomp:          
+    if 'TT' in corrcomp or 'RR' in corrcomp:
+               
+        st1n = stream.select(network=net1,station=sta1,component='N')
+        st1e = stream.select(network=net1,station=sta1,component='E')
+        st2n = stream.select(network=net2,station=sta2,component='N')
+        st2e = stream.select(network=net2,station=sta2,component='E')
         
-        stream1n = stream.select(network=net1,station=sta1,component='N')
-        stream1e = stream.select(network=net1,station=sta1,component='E')        
-        stream2n = stream.select(network=net2,station=sta2,component='N')
-        stream2e = stream.select(network=net2,station=sta2,component='E')
+        if len(st1n)==0 or len(st1e)==0 or len(st2n)==0 or len(st2e)==0:
+            return None
         
-        if (len(stream1n) == 0 or len(stream1e) == 0 or 
-            len(stream2n) == 0 or len(stream2e) == 0):
-            return None      
+        stream1,stream2 = noise.adapt_timespan((st1n+st1e),(st2n+st2e),
+                                               min_overlap=window_length,
+                                               interpolate=True)
         
-        stream1n,stream1e = noise.adapt_timespan(stream1n, stream1e,
-                                                 min_overlap=window_length)
-        stream2n,stream2e = noise.adapt_timespan(stream2n, stream2e,
-                                                 min_overlap=window_length)
-        
-        if (len(stream1n) == 0 or len(stream1e) == 0 or 
-            len(stream2n) == 0 or len(stream2e) == 0):
-            return None 
-        
-        stream1n,stream2n = noise.adapt_timespan(stream1n,stream2n,
-                                                 min_overlap=window_length)
-        stream1e,stream2e = noise.adapt_timespan(stream1e,stream2e,
-                                                 min_overlap=window_length)
-
-        if (len(stream1n) == 0 or len(stream1e) == 0 or 
-            len(stream2n) == 0 or len(stream2e) == 0):
+        if len(stream1) != len(stream2):
+            raise Exception("this should be impossible")
+            
+        if len(stream1) == 0:
             return None
         
         corr_list_rr = []
         corr_list_tt = []
         no_windows = []
-
-        for idx in range(len(stream1n)):
-            tstart = stream1n[idx].stats.starttime
-            tend = stream1n[idx].stats.endtime
-            st1 = (stream1n+stream1e).slice(starttime=tstart,endtime=tend)
-            st2 = (stream2n+stream2e).slice(starttime=tstart,endtime=tend)
+        
+        windows = []
+        for trace in stream1.select(component='N'):
+            windows.append((trace.stats.starttime,trace.stats.endtime))
+        
+        for timewin in windows:
+            st1 = stream1.slice(starttime=timewin[0],endtime=timewin[1])
+            st2 = stream1.slice(starttime=timewin[0],endtime=timewin[1])
             if len(st1)!=2 or len(st2)!=2:
                 st1._cleanup()
                 st2._cleanup()
@@ -353,15 +351,13 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                     
             #try:
             if 'RR' in corrcomp:
-                freq,spec_rr,wincount = noise.noisecorr(st1.select(component='R')[0],
-                                               st2.select(component='R')[0],
-                                               window_length,overlap,
-                                               whiten=whiten,onebit=onebit)
+                freq,spec_rr,wincount = noise.noisecorr(
+                    st1.select(component='R')[0],st2.select(component='R')[0],
+                    window_length,overlap,whiten=whiten,onebit=onebit)
             if 'TT' in corrcomp:
-                freq,spec_tt,wincount = noise.noisecorr(st1.select(component='T')[0],
-                                               st2.select(component='T')[0],
-                                               window_length,overlap,
-                                               whiten=whiten,onebit=onebit)
+                freq,spec_tt,wincount = noise.noisecorr(
+                    st1.select(component='T')[0],st2.select(component='T')[0],
+                    window_length,overlap,whiten=whiten,onebit=onebit)
             #except:
             #    continue
 
@@ -545,10 +541,12 @@ def get_julday_filelist(year,julday,comp,staids,window_length):
         for idx in timematch:
             filelist.append(data_dic[staid][comp]['paths'][idx])
             
-    return filelist
-
+    return filelist  
+    
 
 def downsample_stream(st,sampling_frequency):
+    # this lowpass is not ideal, since it has a very long filter tail.
+    # a steeper filter may be more advisable to avoid aliasing effects.
     st.detrend(type='linear')
     st.detrend(type='demean')
     st.filter("lowpass",freq = 0.4*sampling_frequency,zerophase=True)
@@ -712,77 +710,77 @@ if __name__ == "__main__":
     # UPDATING THE STATION DICTIONARY
     
     statdict={}
-    create_statlist=False
-    if os.path.isfile(statfilepath):
-        with open(statfilepath,'r') as f:
-            for line in f:
-                if line.startswith("#"):
-                    continue
-                line = line.split()
-                statdict[line[0]] = {}
-                statdict[line[0]]['latitude'] = float(line[1])
-                statdict[line[0]]['longitude'] = float(line[2])
-                try:
-                    statdict[line[0]]['elevation'] = float(line[3])
-                except:
-                    pass
-    else:
-        print("no statlist found, creating statlist from files")
-        create_statlist=True
-        
-    if (create_statlist or update_statlist) and mpi_rank==0:
-        
-        # find inventory files
-        inventory_filelist = []
-        if mpi_rank == 0:
-            for dir_,_,files in os.walk(inventory_directory):
-                for file in files:
-                    if file.lower().endswith("xml"):
-                        inventory_filelist.append(os.path.join(dir_,file))
-        inventory_filelist = mpi_comm.bcast(inventory_filelist,root=0)
-        
-        conn = sqlite3.connect(database_file)
-        c = conn.cursor()
-        c.execute("SELECT staid FROM file_db")
-        station_ids = np.unique(c.fetchall())
-        
-        for staid in station_ids:
-            net = staid.split(".")[0]
-            sta = staid.split(".")[1]
-            if not staid in statdict.keys():
-                # try to get the lat lon information from the station xml files
-                statdict[staid] = {}
-                inv_filepaths = []
-                for inv_filepath in inventory_filelist:
-                    if net in inv_filepath and sta in inv_filepath:
-                        inv_filepaths.append(inv_filepath)
-                for inv_filepath in inv_filepaths:
+    
+    if mpi_rank == 0:
+        create_statlist=False
+        if os.path.isfile(statfilepath):
+            with open(statfilepath,'r') as f:
+                for line in f:
+                    if line.startswith("#"):
+                        continue
+                    line = line.split()
+                    statdict[line[0]] = {}
+                    statdict[line[0]]['latitude'] = float(line[1])
+                    statdict[line[0]]['longitude'] = float(line[2])
                     try:
-                        inventory = read_inventory(inv_filepath)
-                        if inventory[0].code == net and inventory[0][0].code==sta:
-                            statdict[staid]['latitude'] = inventory[0][0].latitude
-                            statdict[staid]['longitude'] = inventory[0][0].longitude
-                            try:
-                                statdict[staid]['elevation'] = inventory[0][0].elevation
-                            except:
-                                pass
-                            break
+                        statdict[line[0]]['elevation'] = float(line[3])
                     except:
-                        print("file not readable:",inv_filepath)
-                else:
-                    try: # try to get the station information from the sac headers
-                         # if the input files are not sac, will not work
-                        c.execute("SELECT path FROM file_db WHERE staid=?",(staid,))
-                        filepath = c.fetchall()[0][0]
-                        header = read(filepath,headonly=True)
-                        statdict[staid]['latitude'] = header[0].stats.sac.stla
-                        statdict[staid]['longitude'] = header[0].stats.sac.stlo
-                    except:
-                        print("could not get any lat/lon information for station",net,sta)
+                        pass
+        else:
+            print("no statlist found, creating statlist from files")
+            create_statlist=True
         
-        conn.close()
+        if (create_statlist or update_statlist):
         
-        if create_statlist or update_statlist:
+            # find inventory files
+            inventory_filelist = []
+            if mpi_rank == 0:
+                for dir_,_,files in os.walk(inventory_directory):
+                    for file in files:
+                        if file.lower().endswith("xml"):
+                            inventory_filelist.append(os.path.join(dir_,file))
+            
+            conn = sqlite3.connect(database_file)
+            c = conn.cursor()
+            c.execute("SELECT staid FROM file_db")
+            station_ids = np.unique(c.fetchall())
+            
+            for staid in station_ids:
+                net = staid.split(".")[0]
+                sta = staid.split(".")[1]
+                if not staid in statdict.keys():
+                    # try to get the lat lon information from the station xml files
+                    statdict[staid] = {}
+                    inv_filepaths = []
+                    for inv_filepath in inventory_filelist:
+                        if net in inv_filepath and sta in inv_filepath:
+                            inv_filepaths.append(inv_filepath)
+                    for inv_filepath in inv_filepaths:
+                        try:
+                            inventory = read_inventory(inv_filepath)
+                            if inventory[0].code == net and inventory[0][0].code==sta:
+                                statdict[staid]['latitude'] = inventory[0][0].latitude
+                                statdict[staid]['longitude'] = inventory[0][0].longitude
+                                try:
+                                    statdict[staid]['elevation'] = inventory[0][0].elevation
+                                except:
+                                    pass
+                                break
+                        except:
+                            print("file not readable:",inv_filepath)
+                    else:
+                        try: # try to get the station information from the sac headers
+                             # if the input files are not sac, will not work
+                            c.execute("SELECT path FROM file_db WHERE staid=?",(staid,))
+                            filepath = c.fetchall()[0][0]
+                            header = read(filepath,headonly=True)
+                            statdict[staid]['latitude'] = header[0].stats.sac.stla
+                            statdict[staid]['longitude'] = header[0].stats.sac.stlo
+                        except:
+                            print("could not get any lat/lon information for station",net,sta)
+            
+            conn.close()
+            
             with open(statfilepath,"w") as f:
                 f.write("# staid     lat       lon      elevation\n")
                 for staid in np.sort(list(statdict.keys())):
@@ -797,12 +795,16 @@ if __name__ == "__main__":
                                                       statdict[staid]['longitude']))
                     else:
                         f.write("%s\n" %staid_str)
+                        
+    statdict = mpi_comm.bcast(statdict,root=0)
     
     #%%
         
     pairdict = {}
     available_corrdays = []
-    
+    start_abs = None
+    end_abs = None
+        
     if mpi_rank==0:
         # create a station list and list all possible pairs
         conn = sqlite3.connect(database_file)
@@ -828,7 +830,8 @@ if __name__ == "__main__":
     
     #%%
     ############################                    
-        
+        print("creating a dictionary of possible station pairs with " +
+              "overlapping time windows.")
         data_dic = {}
         timezone = ""
         for line in database_list:
@@ -837,6 +840,10 @@ if __name__ == "__main__":
             tstamp = (tstamp.year,tstamp.julday)
             if not tstamp in available_corrdays:
                 available_corrdays.append(tstamp)
+            tstamp = UTCDateTime(tend)
+            tstamp = (tstamp.year,tstamp.julday)
+            if not tstamp in available_corrdays:
+                available_corrdays.append(tstamp)            
             if not comp in ['Z','N','E']:
                 continue
             try:
@@ -853,6 +860,8 @@ if __name__ == "__main__":
                 data_dic[staid]['E']['windows'] = []
                 data_dic[staid]['E']['paths'] = []
             #data_dic[staid][comp]['windows'].append([UTCDateTime(tstart).__abs__(),UTCDateTime(tend).__abs__()])
+            if UTCDateTime(tend)-UTCDateTime(tstart) < window_length:
+                continue
             data_dic[staid][comp]['windows'].append([tstart,tend])
             data_dic[staid][comp]['paths'].append(path)
             if timezone == "":
@@ -879,9 +888,9 @@ if __name__ == "__main__":
             
             try:
                 dist,az,baz = gps2dist_azimuth(statdict[pair[0]]['latitude'],
-                                               statdict[pair[0]]['longitude'],
-                                               statdict[pair[1]]['latitude'],
-                                               statdict[pair[1]]['longitude'])
+                                                statdict[pair[0]]['longitude'],
+                                                statdict[pair[1]]['latitude'],
+                                                statdict[pair[1]]['longitude'])
             except:
                 raise Exception("No lat/lon information found in statfile for %s or %s" %(pair[0],pair[1]))
                 
@@ -893,9 +902,18 @@ if __name__ == "__main__":
                 pairdict[pair]['az'] = az
                 pairdict[pair]['baz'] = baz
 
-  
-        existing_files = glob.glob(os.path.join(spectra_path,"**/*.pkl"),recursive=True)
-
+        #banana
+        #with open("test.pkl","rb") as f:
+        #    existing_corrdays = pickle.load(f)
+        #    
+        #for pair in existing_corrdays:
+        #    for corrcomp in existing_corrdays[pair]:
+        #        existing_corrdays[pair][corrcomp] = np.array(existing_corrdays[pair][corrcomp])
+        #    
+        #with open("test2.pkl","wb") as f:
+        #    pickle.dump(existing_corrdays,f)
+            
+        
         
         existing_corrdays = {}    
         for i,pair in enumerate(list(pairdict)): 
@@ -905,7 +923,7 @@ if __name__ == "__main__":
         
             
         # check that there is only one file for each pair
-        print("reading existing files")
+        print("checking for existing files")
         for i,pair in enumerate(list(pairdict)):
             
             if i%10000==0:
@@ -939,20 +957,94 @@ if __name__ == "__main__":
                     continue
             
                 existing_corrdays[pair][corrcomp] = corr_dict['corrdays']
-      
+                
         
-                             
+        start_abs = (9999,999)
+        end_abs = (0,0)
+        for pair in existing_corrdays:
+            for corrcomp in existing_corrdays[pair]:
+                corrdays = np.array(existing_corrdays[pair][corrcomp])
+                if len(corrdays)==0:
+                    continue
+                maxyear = np.max(corrdays[:,0])
+                maxday = np.max(corrdays[corrdays[:,0]==maxyear,1])
+                if maxyear>end_abs[0]:
+                    end_abs = (maxyear,maxday)
+                elif maxyear==end_abs[0]:
+                    end_abs = (maxyear,np.max([maxday,end_abs[1]]))
+                minyear = np.min(corrdays[:,0])
+                minday = np.min(corrdays[corrdays[:,0]==minyear,1])
+                if minyear<start_abs[0]:
+                    start_abs = (minyear,minday)
+                elif minyear==start_abs[0]:
+                    start_abs = (minyear,np.min([minday,start_abs[1]]))
+        if start_abs == (9999,999):
+            start_abs = (1000,1)
+            end_abs = (1000,1)
+        else:
+            print("found existing correlations between",start_abs,"and",end_abs)
+                    
+      
+                         
         # cleanup
         database_list = []
         statlist = []
         pairs = []
-        existing_files = []
 
-        
+
     # wait for the first process (mpi_rank=0, root=0) to get to this point      
     # share data among processes
     pairdict = mpi_comm.bcast(pairdict,root=0)
     available_corrdays = mpi_comm.bcast(available_corrdays,root=0)
+    start_abs = mpi_comm.bcast(start_abs,root=0)
+    end_abs = mpi_comm.bcast(end_abs,root=0)
+        
+        
+    if False: # plot showing the number of active days
+        for stat in statdict:
+            statdict[stat]["nopairs"] = 0
+        paircount = {}
+        for pair in pairdict:
+            statdict[pair[0]]["nopairs"] += 1
+            statdict[pair[1]]["nopairs"] += 1
+            try:
+                paircount[pair[0]] += 1
+            except:
+                paircount[pair[0]] = 1
+            try:
+                paircount[pair[1]] += 1
+            except:
+                paircount[pair[1]] = 1
+        plotlist = []
+        for stat in statdict:
+            plotlist.append([statdict[stat]["longitude"],
+                             statdict[stat]["latitude"],
+                             statdict[stat]["nopairs"],
+                             len(data_dic[stat]['Z']['paths'])])
+        plotlist = np.array(plotlist)
+        import matplotlib.pyplot as plt
+        import cartopy.crs as ccrs
+        import cartopy.feature as cf
+        fig = plt.figure(figsize=(12,7))
+        proj = ccrs.TransverseMercator(central_longitude=13,
+                                       central_latitude=46,
+                                       approx=False)
+        axm2 = fig.add_subplot(1,1,1,projection=proj)
+        cbar = axm2.scatter(plotlist[:,0],plotlist[:,1],c=plotlist[:,3],
+                           transform = ccrs.PlateCarree())
+        plt.colorbar(cbar,shrink=0.5,label='# of active days')
+        axm2.coastlines(resolution='50m')
+        axm2.add_feature(cf.BORDERS.with_scale('50m'))
+        axm2.add_feature(cf.OCEAN.with_scale('50m'),facecolor='lightblue')
+        axm2.add_feature(cf.LAND.with_scale('50m'),facecolor='lightgrey')
+        gl = axm2.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
+                  linewidth=1, color='gray', alpha=0.5, linestyle='--')
+        
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xlines = False
+        gl.ylines = False
+        plt.show()
     
     #%%######################
     """ PROCESS LOOP """
@@ -967,6 +1059,13 @@ if __name__ == "__main__":
         
         if year not in years and len(years)>0:
             continue
+        if ( UTCDateTime(year=year,julday=day) >= 
+             UTCDateTime(year=start_abs[0],julday=start_abs[1]) and
+             UTCDateTime(year=year,julday=day) < 
+             UTCDateTime(year=end_abs[0],julday=end_abs[1]) ):
+            if mpi_rank == 0:
+                print("skipping correlation day",year,day)
+            continue
         #if not day==3:
         #    continue
                         
@@ -978,10 +1077,10 @@ if __name__ == "__main__":
         stream_e = Stream()            
 
         worklist = []
-
+                
         if 'ZZ' in comp_correlations:
         
-            print("Correlation ZZ\n",datetime.datetime.now(),"\nYear:",year,"Julday:",day,file=flog,flush=True)               
+            print("\nCorrelation ZZ\n",datetime.datetime.now(),"\nYear:",year,"Julday:",day,file=flog,flush=True)               
 
             if mpi_rank == 0:
                 
@@ -1022,7 +1121,7 @@ if __name__ == "__main__":
       
         if 'RR' in comp_correlations or 'TT' in comp_correlations:
             
-            print("Correlation of horizontal components\n",datetime.datetime.now(),"\nYear:",year,"Julday:",day,file=flog,flush=True)                
+            print("\nCorrelation of horizontal components\n",datetime.datetime.now(),"\nYear:",year,"Julday:",day,file=flog,flush=True)                
               
             if mpi_rank == 0:
                 

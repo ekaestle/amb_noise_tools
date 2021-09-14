@@ -356,13 +356,13 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
             try:
                 crossings,phase_vel = noise.get_smooth_pv(freqax,ccspec,dist,ref_curve,
                              freqmin=min_freq,freqmax=max_freq, min_vel=min_vel, max_vel=max_vel,
-                             filt_width=5,filt_height=1.0,pick_threshold=pick_thresh,
+                             filt_width=8,filt_height=0.9,pick_threshold=pick_thresh,
                            horizontal_polarization=horizontal_polarization, smooth_spectrum=not(velocity_filter),
                            plotting=show_pickplots)
             except:      
                 crossings,phase_vel = noise.get_smooth_pv(freqax,ccspec,dist,ref_curve,
                              freqmin=min_freq,freqmax=max_freq, min_vel=min_vel, max_vel=max_vel,
-                             filt_width=4,filt_height=0.8,pick_threshold=pick_thresh*1.5,
+                             filt_width=6,filt_height=0.7,pick_threshold=pick_thresh*1.2,
                            horizontal_polarization=horizontal_polarization, smooth_spectrum=not(velocity_filter),
                            plotting=show_pickplots)            
     
