@@ -281,7 +281,7 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
         
         for timewin in windows:
             st1 = stream1.slice(starttime=timewin[0],endtime=timewin[1])
-            st2 = stream1.slice(starttime=timewin[0],endtime=timewin[1])
+            st2 = stream2.slice(starttime=timewin[0],endtime=timewin[1])
             if len(st1)!=2 or len(st2)!=2:
                 st1._cleanup()
                 st2._cleanup()
