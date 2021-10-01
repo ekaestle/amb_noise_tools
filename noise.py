@@ -411,7 +411,7 @@ def freq_to_time_domain(spectrum,f):
 
 ##############################################################################
 def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
-              onebit=False,whiten=True, water_level=30,cos_taper=True,\
+              onebit=False,whiten=True, water_level=60,cos_taper=True,\
               taper_width=0.05,subsample_timeshift_interpolation=True):
     """
     Correlates trace1 and trace2 and returns the summed correlation function
