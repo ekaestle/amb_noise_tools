@@ -12,6 +12,8 @@ Updated September 2021
   The function performs more checks and provides more options to correct for
   subsample timeshifts.
 - get_smooth_pv has been slightly improved to yield more stable results.
+- the waterlevel used in the whitening operation is now calculated with the
+  obspy.invsim.waterlevel tool.
 
 Updated July 2021
 - The time shift correction has been removed from the cross correlation function.
@@ -35,7 +37,7 @@ from scipy.interpolate import interp1d,griddata
 from scipy.special import jn_zeros,jv
 from scipy.stats import linregress
 from scipy.signal import detrend
-from obspy.signal.invsim import cosine_taper
+from obspy.signal.invsim import cosine_taper, waterlevel
 from scipy.signal import find_peaks
 from obspy.core import Stream, Trace
 import matplotlib.pyplot as plt
@@ -409,7 +411,7 @@ def freq_to_time_domain(spectrum,f):
 
 ##############################################################################
 def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
-              onebit=False,whiten=True, waterlevel=1e-10,cos_taper=True,\
+              onebit=False,whiten=True, water_level=30,cos_taper=True,\
               taper_width=0.05,subsample_timeshift_interpolation=True):
     """
     Correlates trace1 and trace2 and returns the summed correlation function
@@ -436,8 +438,9 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
     :param onebit: If ``True`` a one bit normalization will be applied.
     :type whiten: bool
     :param whiten: If ``True`` the spectrum will be whitened before correlation. 
-    :type waterlevel: float
-    :param waterlevel: Waterlevel for the whitening.
+    :type water_level: float
+    :param water_level: Waterlevel used for whitening (in dB, 
+                                                      see obspy.signal.invsim).
     :type cos_taper: bool
     :param cos_taper: If ``True`` the windowed traces will be tapered before
         the FFT.
@@ -513,8 +516,9 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
         if whiten:
             #D1=np.exp(1j * np.angle(D1)) # too slow
             #D2=np.exp(1j * np.angle(D2))
-            D1/=np.abs(D1)+waterlevel
-            D2/=np.abs(D2)+waterlevel
+            # water level calculated depending on the spectral amplitudes
+            D1/=np.abs(D1)+waterlevel(D1,water_level)
+            D2/=np.abs(D2)+waterlevel(D2,water_level)
             
         # actual correlation in the frequency domain
         CORR=np.conj(D1)*D2
