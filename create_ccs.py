@@ -1,7 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Update November 2021
+Updated November 2021
 - accepts also mixed component correlations (RT,ZR,etc.)
+Updated September 2021
+- adapted to be compatible with the new noise.adapt_timespan function
+Updated June 2021
+- script makes sure now that the horizontal traces are sampled at the same points in time
+  if there is a large subsample time shift. Before, this would result in an error.
+- can read station xml files to get station information
+- better error handling
+- fixed memory leak in the horizontal component correlations
+
 
 Updated April 2020
 
@@ -1020,9 +1029,9 @@ if __name__ == "__main__":
         if year not in years and len(years)>0:
             continue
         # if ( UTCDateTime(year=year,julday=day) >= 
-        #      UTCDateTime(year=start_abs[0],julday=start_abs[1]) and
-        #      UTCDateTime(year=year,julday=day) < 
-        #      UTCDateTime(year=end_abs[0],julday=end_abs[1]) ):
+        #       UTCDateTime(year=start_abs[0],julday=start_abs[1]) and
+        #       UTCDateTime(year=year,julday=day) < 
+        #       UTCDateTime(year=end_abs[0],julday=end_abs[1]) ):
         #     if mpi_rank == 0:
         #         print("skipping correlation day",year,day)
         #     continue
