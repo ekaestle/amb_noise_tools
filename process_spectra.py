@@ -46,6 +46,7 @@ min_common_days = 2 # recommended to be at least half a year
 #min_amplitude = 0.05 # minimum allowed amplitude of the cc spectrum with respect to its maximum (should be tested, otherwise set to 0)
 pick_thresh = 2.0
 horizontal_polarization=False # If True, TT or RR cross-correlations are calculated (additional J2 term). If False, only ZZ
+# note: no asymmetric correlations are currently supported (eg RZ or TR are not supported)
 spectra_path = "./cross_correlation_spectra/ZZ/" # path where spectra files are stored (filenames are expected to have both station names, as the ones created by create_ccs.py. Otherwise adapt stat1 = fname.split("/")[-1].split("_")[0] below.)
 phase_vel_path='./phase_vel_curves/' # path where to save the cross_correlation spectra
 ref_curve = np.loadtxt("Average_phase_velocity_rayleigh") # reference curve for picking
