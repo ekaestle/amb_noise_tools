@@ -1,3 +1,0 @@
-# staid     lat       lon      elevation
-CH.SULZ   47.527481   8.111530
-CH.VDL    46.483181   9.449560
