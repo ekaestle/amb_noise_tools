@@ -2,6 +2,8 @@
 """
 Updated November 2021
 - accepts also mixed component correlations (RT,ZR,etc.)
+- accepts also E and N component correlations
+- generalized and simplified script
 Updated September 2021
 - adapted to be compatible with the new noise.adapt_timespan function
 Updated June 2021
@@ -80,7 +82,7 @@ years = []
 # list of components to be processed, e.g, ['ZZ','TT']
 # note: dispersion curve picking is currently only supported for symmetric
 # correlation components (ZZ,RR,TT)
-comp_correlations = ['ZZ','RR','TT','ZR','RZ','TR']
+comp_correlations = ['ZZ','RR','TT','ZR','RZ','TR','NN','NE']
 
 save_monthly = False # additionally save monthly cross correlations
 
@@ -105,235 +107,89 @@ import sqlite3
 
 
 #%%      
-def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
-    global spectra_path
+def process_noise(stream,pair,comp_correlations,window_length,overlap,year,julday,flog):
     global statdict
     global save_monthly
     global pairdict
+    global existing_corrdays
 
     #print(datetime.datetime.now(),">>>>>> Processing pair",stat1,stat2,file=flog) 
+
+    if len(stream)==0:
+        print("empty stream")
+        return
     
     stat1 = pair[0]
     stat2 = pair[1]
     net1,sta1 = stat1.split(".")
     net2,sta2 = stat2.split(".")
-    
-    if 'ZZ' in corrcomp:
         
-        filepath = getfilepath(stat1,stat2,"ZZ",pairdict[pair]['dist'],overlap)
-
-        if os.path.isfile(filepath):
-            with open(filepath,"rb") as f:
-                corr_dict = pickle.load(f)
-        
-            if (year,julday) in corr_dict['corrdays']:
-                print("correlation day already in database!",filepath,year,julday, "skipping")          
-
-
-        stream1 = stream.select(network=net1,station=sta1,component='Z')
-        stream2 = stream.select(network=net2,station=sta2,component='Z')
-        
-        if len(stream1) == 0 or len(stream2) == 0:
-            return None
-            
-        stream1,stream2 = noise.adapt_timespan(stream1, stream2,
-                                               min_overlap=window_length,
-                                               interpolate=True)
-        if len(stream1) != len(stream2):
-            raise Exception("this should be impossible")
-            
-        if len(stream1)==0 or len(stream2)==0:
-            return None        
-    
-        corr_list = []
-        no_windows = []
-        
-        for idx in range(len(stream1)):
-            
-            tstart = stream1[idx].stats.starttime
-            tend = stream1[idx].stats.endtime
-
-            st1 = stream1.slice(starttime=tstart,endtime=tend)
-            st2 = stream2.slice(starttime=tstart,endtime=tend)
-            # for the unlikely case that we have several overlapping traces
-            # for the same station
-            if len(st1)!=1 or len(st2)!=1:
-                st1._cleanup()
-                st2._cleanup()
-                if len(st1)>1:
-                    # just take the longer trace
-                    st1 = Stream(st1[np.array(list(map(len,st1))).argmax()])
-                if len(st2)>1:
-                    st2 = Stream(st2[np.array(list(map(len,st2))).argmax()])
-                
-            if (st1[0].stats.starttime != st2[0].stats.starttime or
-                st1[0].stats.endtime != st2[0].stats.endtime or
-                st1[0].stats.endtime - st2[0].stats.starttime < window_length):
-                raise Exception("this should be impossible")
-                
-            if np.std(st1[0].data) == 0. or np.std(st2[0].data) == 0. :
-                print("data all zero",file=flog)
-                print(st1,file=flog)
-                print(st2,file=flog)
-                continue
-                       
-            if (np.isnan(st1[0].data).any() or np.isnan(st2[0].data).any() or
-                np.isinf(st1[0].data).any() or np.isinf(st2[0].data).any() ):
-                print("nan/inf in data",file=flog)
-                print(st1,file=flog)
-                print(st2,file=flog)
-                continue
-            
-            #try:
-            freq,spec,wincount = noise.noisecorr(st1[0],st2[0],window_length,
-                                                 overlap,whiten=whiten,
-                                                 onebit=onebit)
-            corr_list.append(spec)
-            no_windows.append(wincount)
-            #except:
-            #    continue
-        
-        if len(corr_list) == 0:
-            return None
-        
-        corr_spectrum = np.average(np.array(corr_list),axis=0,weights=no_windows)
-        
-        filepath = getfilepath(stat1,stat2,"ZZ",pairdict[pair]['dist'],overlap)
-        
-        if os.path.isfile(filepath):
-            with open(filepath,"rb") as f:
-                corr_dict = pickle.load(f)
-        
-            if (year,julday) in corr_dict['corrdays']:
-                print("correlation day already in database!",filepath,year,julday, "skipping")          
-            else:
-                if len(corr_spectrum)!=len(corr_dict['spectrum']):
-                    print("Warning: correlation trace has not the same length "+
-                          "as the trace in the database. Maybe different "+
-                          "sampling rates? Skipping.",net1,sta1,net2,sta2)
-                    return None
-                corr_dict['corrdays'].append((year,julday))
-                corr_dict['spectrum'] = np.average([corr_spectrum,
-                                                    corr_dict['spectrum']],
-                                                   axis=0,
-                                                   weights=[np.sum(no_windows),
-                                                            corr_dict['no_wins']])
-                corr_dict['no_wins'] += np.sum(no_windows)
-
+    # sort the correlation components, so that the unrotated ones are processed
+    # first, and afterwards the rotated (unrotated traces are no longer acces-
+    # sible after rotation)
+    unrotated_components = []
+    rotated_components = []
+    for comp in comp_correlations:
+        if comp[0] in 'RT' or comp[1] in 'RT':
+            rotated_components.append(comp)
         else:
-            
-            corr_dict = {}
-            corr_dict['corrdays'] = [(year,julday)]
-            corr_dict['spectrum'] = corr_spectrum
-            corr_dict['freq'] = freq
-            corr_dict['no_wins'] = np.sum(no_windows)
-            corr_dict['dist'] = pairdict[pair]['dist']
-            corr_dict['az'] = pairdict[pair]['az']
-            corr_dict['baz'] = pairdict[pair]['baz']
-            corr_dict['component'] = 'ZZ'
-            corr_dict['station1'] = statdict[stat1]
-            corr_dict['station2'] = statdict[stat2]
-            corr_dict['station1']['id'] = stat1
-            corr_dict['station2']['id'] = stat2
-        
-        if save_monthly:
-            
-            month = str(year)+"."+str(UTCDateTime(year=year,julday=day).month)
-            
-            if not 'spectrum.'+month in corr_dict.keys():
-                
-                corr_dict['spectrum.'+month] = corr_spectrum
-                corr_dict['no_wins.'+month] = np.sum(no_windows)
-                
-            else:
-            
-                corr_dict['spectrum.'+month] = np.average([corr_spectrum,
-                                            corr_dict['spectrum.'+month]],
-                                            axis=0,
-                                            weights=[np.sum(no_windows),
-                                                     corr_dict['no_wins.'+month]])
-                corr_dict['no_wins.'+month] += np.sum(no_windows)
-
-        with open(filepath,"wb") as f:
-            pickle.dump(corr_dict,f)
-               
-        #print("successfully correlated",stat1,stat2,"comp:",corrcomp,"day:",year,julday)
-        
+            unrotated_components.append(comp)
+    component_list = unrotated_components+rotated_components
  
-    # horizontal/mixed component correlations
-    else:
-               
-        st1z = stream.select(network=net1,station=sta1,component='Z')
-        st1n = stream.select(network=net1,station=sta1,component='N')
-        st1e = stream.select(network=net1,station=sta1,component='E')
-        st2z = stream.select(network=net2,station=sta2,component='Z')
-        st2n = stream.select(network=net2,station=sta2,component='N')
-        st2e = stream.select(network=net2,station=sta2,component='E')
+    # results will be saved to this dictionary
+    corr_list = {}
+    for components in component_list:
+        corr_list[components] = {}
+        corr_list[components]['spec'] = []
+        corr_list[components]['no_windows'] = []
+
+    rotated = False
+    for components in component_list:
         
-        if len(st1z)==0 or len(st2z)==0:
-            expected_length = 2
-        else:
-            expected_length = 3
+        if ((components[0] in 'NE' and components[1] in 'RT') or 
+            (components[0] in 'RT' and components[1] in 'NE')):
+            print("mixed correlations of rotated (RT) and unrotated (NE) components is currently not supported.")
+            continue
         
-        if len(st1n)==0 or len(st1e)==0 or len(st2n)==0 or len(st2e)==0:
-            return None
+        if len(components) != 2:
+            print("correlation",components,"is not valid, skipping.")
+            continue
         
-        stream1,stream2 = noise.adapt_timespan((st1z+st1n+st1e),
-                                               (st2z+st2n+st2e),
-                                               min_overlap=window_length,
-                                               interpolate=True)
-        
-        if len(stream1) != len(stream2):
-            raise Exception("this should be impossible")
+        if (year,julday) in existing_corrdays[pair][components]:
+            continue
+    
+        # correlations of unrotated components (ZZ,NN,EE,ZN,...)
+        if components[0] in 'ZNE' and components[1] in 'ZNE':
             
-        if len(stream1) == 0:
-            return None
-        
-        corr_list = {}
-        for components in corrcomp:
-            corr_list[components] = {}
-            corr_list[components]['spec'] = []
-            corr_list[components]['no_windows'] = []
-        
-        windows = []
-        for trace in stream1.select(component='N'):
-            windows.append((trace.stats.starttime,trace.stats.endtime))
-        
-        for timewin in windows:
-            st1 = stream1.slice(starttime=timewin[0],endtime=timewin[1])
-            st2 = stream2.slice(starttime=timewin[0],endtime=timewin[1])
-            if len(st1)!=expected_length or len(st2)!=expected_length:
-                st1._cleanup()
-                st2._cleanup()
-            if len(st1)!=expected_length:
-                for tr in st1:
-                    if tr.stats.endtime-tr.stats.starttime < window_length:
-                        st1.remove(tr)
-            if len(st2)!=expected_length:
-                for tr in st2:
-                    if tr.stats.endtime-tr.stats.starttime < window_length:
-                        st2.remove(tr)
-            if len(st1)!=expected_length or len(st2)!=expected_length:
-                print("error for streams:",file=flog)
-                print(st1,file=flog)
-                print(st2,file=flog)
-                print("number of traces in stream is not okay",file=flog)
-                raise Exception()
+            st1 = stream.select(network=net1,station=sta1,component=components[0])
+            st2 = stream.select(network=net1,station=sta1,component=components[1])
+            
+            st1,st2 = noise.adapt_timespan(st1,st2,min_overlap=window_length,
+                                           interpolate=True,copystreams=True)
+            
+            if len(st1) == 0 or len(st2) == 0:
                 continue
             
-            # check that traces are not all zero
-            try:
-                for tr in (st1+st2):
-                    if np.std(tr.data) == 0.:
-                        print("data all zero",file=flog)
-                        print(tr,file=flog)
-                        raise Exception()
-                    if np.isnan(tr.data).any() or np.isinf(tr.data).any():
-                        print("nan/inf in data",file=flog)
-                        print(tr,file=flog)
-                        raise Exception()
-            except:
-                continue
+        # if R or T is in the correlation components, rotate streams
+        elif not rotated:
+            
+            st1z = stream.select(network=net1,station=sta1,component='Z')
+            st1n = stream.select(network=net1,station=sta1,component='N')
+            st1e = stream.select(network=net1,station=sta1,component='E')
+            st2z = stream.select(network=net2,station=sta2,component='Z')
+            st2n = stream.select(network=net2,station=sta2,component='N')
+            st2e = stream.select(network=net2,station=sta2,component='E')
+            
+            if len(st1n)==0 or len(st2n)==0 or len(st1e)==0 or len(st2e)==0:
+                return # abort, will not be possible to rotate to RT coords
+            
+            st1,st2 = noise.adapt_timespan((st1z+st1n+st1e),
+                                           (st2z+st2n+st2e),
+                                            min_overlap=window_length,
+                                            interpolate=True,copystreams=True)
+            
+            if len(st1) < 2 or len(st2) < 2:
+                return # abort, will not be possible to rotate to RT coords
             
             # check that the time span is really the same
             if (st1[0].stats.starttime != st1[1].stats.starttime or
@@ -343,8 +199,8 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 st1[0].stats.endtime != st2[0].stats.endtime or
                 st1[0].stats.endtime != st2[1].stats.endtime or
                 st1[0].stats.endtime - st1[0].stats.starttime < window_length):
-                raise Exception("this should not be possible!")
-              
+                raise Exception("this should not be possible!")   
+            
             # az = azimuth from station1 -> station2
             # baz = azimuth from station2 -> station1
             # for stream2 the back azimuth points in direction of station1
@@ -365,91 +221,127 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
                 print(st2,file=flog)
                 raise Exception("Error rotating stream")
                 continue
-                    
-            #try:
-            for components in corrcomp:
-                comp1 = components[0]
-                comp2 = components[1]
-                try:
-                    freq,spec,wincount = noise.noisecorr(
-                        st1.select(component=comp1)[0],
-                        st2.select(component=comp2)[0],
-                        window_length,overlap,whiten=whiten,onebit=onebit)
-                except:
-                    print("could not correlate",st1[0].stats.id,st2[0].stats.id,components)
-                    continue
-                
-                corr_list[components]['spec'].append(spec)
-                corr_list[components]['no_windows'].append(wincount)
-          
-        # finished correlating. saving the results to a file
-        for components in corrcomp:
-            
-            if len(corr_list[components]['spec']) == 0:
-                continue
-
-            corr_spectrum = np.average(
-                np.array(corr_list[components]['spec']),axis=0,
-                weights=corr_list[components]['no_windows'])
-                    
-            filepath = getfilepath(stat1,stat2,components,
-                                   pairdict[pair]['dist'],overlap)
-            
-            if os.path.isfile(filepath):
-                with open(filepath,"rb") as f:
-                    corr_dict = pickle.load(f)
-            
-                if (year,julday) in corr_dict['corrdays']:
-                    print("correlation day already in database!",filepath,year,julday)
-                    continue
-                
-                else:                  
-                    corr_dict['corrdays'].append((year,julday))
-                    corr_dict['spectrum'] = np.average(
-                        [corr_spectrum,corr_dict['spectrum']],axis=0,
-                        weights=[np.sum(corr_list[components]['no_windows']),
-                                 corr_dict['no_wins']])
-                    corr_dict['no_wins'] += np.sum(corr_list[components]['no_windows'])
-    
-            else:
-                
-                corr_dict = {}                
-                corr_dict['corrdays'] = [(year,julday)]
-                corr_dict['spectrum'] = corr_spectrum
-                corr_dict['freq'] = freq
-                corr_dict['no_wins'] = np.sum(corr_list[components]['no_windows'])
-                corr_dict['dist'] = pairdict[pair]['dist']
-                corr_dict['az'] = pairdict[pair]['az']
-                corr_dict['baz'] = pairdict[pair]['baz']
-                corr_dict['component'] = components
-                corr_dict['station1'] = statdict[stat1]
-                corr_dict['station2'] = statdict[stat2]
-                corr_dict['station1']['id'] = stat1
-                corr_dict['station2']['id'] = stat2
-            
-            if save_monthly:
-                
-                month = str(year)+"."+str(UTCDateTime(year=year,julday=day).month)
-                
-                if not 'spectrum.'+month in corr_dict.keys():
-                    
-                    corr_dict['spectrum.'+month] = corr_spectrum
-                    corr_dict['no_wins.'+month] = np.sum(
-                        corr_list[components]['no_windows'])
-                    
-                else:
-                
-                    corr_dict['spectrum.'+month] = np.average(
-                        [corr_spectrum,corr_dict['spectrum.'+month]],axis=0,
-                        weights=[np.sum(corr_list[components]['no_windows']),
-                                 corr_dict['no_wins.'+month]])
-                    corr_dict['no_wins.'+month] += np.sum(
-                        corr_list[components]['no_windows'])
+            rotated = True
         
-            with open(filepath,"wb") as f:
-                pickle.dump(corr_dict,f) 
+        # timewindows that have overlapping data windows longer than window_length
+        windows = []
+        for trace in st1:
+            window = (trace.stats.starttime,trace.stats.endtime)
+            if window in windows:
+                continue
+            windows.append(window)
+    
+        for timewin in windows:
             
-        #print("successfully correlated",stat1,stat2,"comp:",corrcomp,"day:",year,julday)
+            corrstream1 = st1.select(component=components[0]).slice(
+                starttime=timewin[0],endtime=timewin[1])
+            corrstream2 = st2.select(component=components[1]).slice(
+                starttime=timewin[0],endtime=timewin[1])
+        
+            # check for nan/inf in data
+            data_errors = False
+            for tr in (corrstream1+corrstream2):
+                if tr.stats.endtime-tr.stats.starttime < window_length:
+                    # trace too short
+                    data_errors = True
+                if np.std(tr.data) == 0.:
+                    print("data all zero",file=flog)
+                    print(tr,file=flog)
+                    data_errors = True
+                if np.isnan(tr.data).any() or np.isinf(tr.data).any():
+                    print("nan/inf in data",file=flog)
+                    print(tr,file=flog)
+                    data_errors = True
+            if data_errors:
+                continue
+            
+            # check that the time span is really the same
+            if (corrstream1[0].stats.starttime != corrstream2[0].stats.starttime or
+                corrstream1[0].stats.endtime != corrstream2[0].stats.endtime):
+                raise Exception("this should not be possible!")
+            
+            # finally, do the correlation
+            try:
+                freq,spec,wincount = noise.noisecorr(
+                    corrstream1[0],corrstream2[0],
+                    window_length,overlap,whiten=whiten,onebit=onebit)
+            except:
+                print("could not correlate",corrstream1[0].stats.id,
+                      corrstream2[0].stats.id,components)
+                continue
+            
+            corr_list[components]['spec'].append(spec)
+            corr_list[components]['no_windows'].append(wincount)
+
+
+    # finished correlating. saving the results to a file
+    for components in component_list:
+        
+        if len(corr_list[components]['spec']) == 0:
+            continue
+
+        corr_spectrum = np.average(
+            np.array(corr_list[components]['spec']),axis=0,
+            weights=corr_list[components]['no_windows'])
+                
+        filepath = getfilepath(stat1,stat2,components,
+                               pairdict[pair]['dist'],overlap)
+        
+        if os.path.isfile(filepath):
+            with open(filepath,"rb") as f:
+                corr_dict = pickle.load(f)
+        
+            if (year,julday) in corr_dict['corrdays']:
+                print("correlation day already in database!",filepath,year,julday)
+                continue
+            
+            else:                  
+                corr_dict['corrdays'].append((year,julday))
+                corr_dict['spectrum'] = np.average(
+                    [corr_spectrum,corr_dict['spectrum']],axis=0,
+                    weights=[np.sum(corr_list[components]['no_windows']),
+                             corr_dict['no_wins']])
+                corr_dict['no_wins'] += np.sum(corr_list[components]['no_windows'])
+
+        else:
+            
+            corr_dict = {}                
+            corr_dict['corrdays'] = [(year,julday)]
+            corr_dict['spectrum'] = corr_spectrum
+            corr_dict['freq'] = freq
+            corr_dict['no_wins'] = np.sum(corr_list[components]['no_windows'])
+            corr_dict['dist'] = pairdict[pair]['dist']
+            corr_dict['az'] = pairdict[pair]['az']
+            corr_dict['baz'] = pairdict[pair]['baz']
+            corr_dict['component'] = components
+            corr_dict['station1'] = statdict[stat1]
+            corr_dict['station2'] = statdict[stat2]
+            corr_dict['station1']['id'] = stat1
+            corr_dict['station2']['id'] = stat2
+        
+        if save_monthly:
+            
+            month = str(year)+"."+str(UTCDateTime(year=year,julday=julday).month)
+            
+            if not 'spectrum.'+month in corr_dict.keys():
+                
+                corr_dict['spectrum.'+month] = corr_spectrum
+                corr_dict['no_wins.'+month] = np.sum(
+                    corr_list[components]['no_windows'])
+                
+            else:
+            
+                corr_dict['spectrum.'+month] = np.average(
+                    [corr_spectrum,corr_dict['spectrum.'+month]],axis=0,
+                    weights=[np.sum(corr_list[components]['no_windows']),
+                             corr_dict['no_wins.'+month]])
+                corr_dict['no_wins.'+month] += np.sum(
+                    corr_list[components]['no_windows'])
+    
+        with open(filepath,"wb") as f:
+            pickle.dump(corr_dict,f) 
+            
+    #print("successfully correlated",stat1,stat2,"comp:",corrcomps,"day:",year,julday)
         
     
     return
@@ -460,6 +352,7 @@ def process_noise(stream,pair,corrcomp,window_length,overlap,year,julday,flog):
 #%%
     
 def getfilepath(stat1,stat2,corr_comp,dist,overlap):
+    global spectra_path
     global statdict
     
     if stat1[0] == ".":
@@ -481,7 +374,7 @@ def get_julday_filelist(year,julday,comp,staids,window_length):
     filelist = []
 
     try:
-        starttime = abs(UTCDateTime(year=year,julday=day))
+        starttime = abs(UTCDateTime(year=year,julday=julday))
     except:
         print("could not convert startdate")
         return filelist
@@ -515,6 +408,10 @@ if __name__ == "__main__":
     mpi_comm = MPI.COMM_WORLD
     mpi_rank = mpi_comm.Get_rank()
     mpi_size = mpi_comm.Get_size()
+    
+    # make sure comp_correlations is a list
+    if type(comp_correlations) != type([]):
+        comp_correlations = [comp_correlations]
 
     comp_correlations = [c.upper() for c in comp_correlations]
 
@@ -590,7 +487,7 @@ if __name__ == "__main__":
         new_paths = set(pathlist_new) - set(pathlist) #elements that are uniquely in pathlist_new
         print(len(new_paths),"new paths found",flush=True)
         #new_paths = set(pathlist).symmetric_difference(set(pathlist_new))
-        print("adding new entries (for each file the header is being read, this may take a while)...")
+        print("Adding new entries (for each file the header is being read, this may take a while)...")
         #errorfile = open("read_errors_database.txt","w")
         #print("check for errors in",errorfile)
         for filepath in new_paths:
@@ -788,7 +685,7 @@ if __name__ == "__main__":
     
     #%%
     ############################                    
-        print("creating a dictionary of possible station pairs with " +
+        print("Creating a dictionary of possible station pairs with " +
               "overlapping time windows.")
         data_dic = {}
         timezone = ""
@@ -797,11 +694,11 @@ if __name__ == "__main__":
             if only_process_these_stations is not None:
                 if not staid in only_process_these_stations:
                     continue
-            tstamp = UTCDateTime(tstart)
+            tstamp = UTCDateTime(tstart)+window_length/2.
             tstamp = (tstamp.year,tstamp.julday)
             if not tstamp in available_corrdays:
                 available_corrdays.append(tstamp)
-            tstamp = UTCDateTime(tend)
+            tstamp = UTCDateTime(tend)-window_length/2.
             tstamp = (tstamp.year,tstamp.julday)
             if not tstamp in available_corrdays:
                 available_corrdays.append(tstamp)            
@@ -1024,7 +921,7 @@ if __name__ == "__main__":
     for corrday in available_corrdays:
         
         year = corrday[0]
-        day = corrday[1]
+        julday = corrday[1]
         
         if year not in years and len(years)>0:
             continue
@@ -1039,136 +936,68 @@ if __name__ == "__main__":
         #    continue
                         
         if mpi_rank==0:
-            print("working on correlation day:",year,day)
+            print("working on correlation day:",year,julday)
     
-        stream_z = Stream()
-        stream_n = Stream()    
-        stream_e = Stream()            
-
+        stream = Stream()
         worklist = []
-                
-        if 'ZZ' in comp_correlations:
         
-            print("\nCorrelation ZZ\n",datetime.datetime.now(),"\nYear:",year,"Julday:",day,file=flog,flush=True)               
+        # do the file reading only on the first process to avoid reading
+        # from the HDD by too many processes at once
+        if mpi_rank == 0:
+        
+            # check which files need to be read  
+            for components in comp_correlations:
 
-            if mpi_rank == 0:
-                
-                for pair in list(pairdict):                        
-                    if (year,day) in existing_corrdays[pair]['ZZ']:
+                for pair in list(pairdict):
+                    if (year,julday) in existing_corrdays[pair][components]:
                         continue
-                    else:
-                        worklist.append(pair)
-
-                station_ids = np.unique(worklist)
-                
-                filelist_z = get_julday_filelist(year,day,'Z',station_ids,window_length)
-                
-                if len(filelist_z)>1:                        
-                    for fpath in filelist_z:
-                        st = read(fpath)
-                        #for tr in st:
-                        #    if tr.stats.station == "":
-                        #        tr.stats.station = os.path.basename(fpath)[:3]
-                        stream_z += st
-
-            # wait for the first process (mpi_rank=0, root=0) to get to this point      
-            # share read in data among processes
-            #mpi_comm.Barrier() 
-            stream_z = mpi_comm.bcast(stream_z,root=0)
-            worklist = mpi_comm.bcast(worklist,root=0)
-
-            print("Working on",len(worklist[mpi_rank::mpi_size]),"station pairs",file=flog,flush=True)
-            for i,pair in enumerate(worklist[mpi_rank::mpi_size]):
-                                    
-                if i%10000 == 0:
-                    print("Processed",i,"/",len(worklist[mpi_rank::mpi_size]),"pairs",file=flog,flush=True)                
-                process_noise(stream_z,pair,'ZZ',window_length,overlap,year,day,flog)
-                      
-            print("Finished processing ZZ correlation day.",file=flog,flush=True)                      
-            stream_z = Stream()
-                    
-      
-        if len(comp_correlations) > 1:
+                    elif pair not in worklist:
+                        worklist.append(pair)                
+                        
+            station_ids = np.unique(worklist)
             
-            print("\nCorrelation of horizontal components\n",datetime.datetime.now(),"\nYear:",year,"Julday:",day,file=flog,flush=True)                
-              
-            if mpi_rank == 0:
+            single_comps = ''.join(comp_correlations)
+            single_comps = single_comps.replace('R', 'NE')
+            single_comps =  single_comps.replace('T', 'NE')
+            single_comps = np.unique([c for c in single_comps])
+            for component in single_comps:
                 
-                worklist = []
-                
-                single_comps = []
-                for components in comp_correlations:
-                    
-                    if len(components) != 2:
-                        print("correlation",components,"is not valid, skipping.")
-                        continue
-                    if components == 'ZZ':
-                        continue
-                    if not components[0] in single_comps:
-                        single_comps.append(components[0])
-                    if not components[1] in single_comps:
-                        single_comps.append(components[1])
-                    
-                    for pair in list(pairdict):
-                        if (year,day) in existing_corrdays[pair][components]:
-                            continue
-                        elif pair not in worklist:
-                            worklist.append(pair)
-    
-                station_ids = np.unique(worklist)
-                
-                if "Z" in single_comps:
-                    filelist_z = get_julday_filelist(year,day,'Z',station_ids,
-                                                     window_length)
-                    for fpath in filelist_z:
-                        st = read(fpath)
-                        stream_z += st
-                
-                filelist_n = get_julday_filelist(year,day,'N',station_ids,
-                                                 window_length)
-                
-                filelist_e = get_julday_filelist(year,day,'E',station_ids,
-                                                 window_length)
-
-                if len(filelist_n)>1 and len(filelist_e)>1:               
-                    for fpath in filelist_n:                 
-                        st = read(fpath)                       
-                        #for tr in st:
-                        #    if tr.stats.station == "":
-                        #        tr.stats.station = os.path.basename(fpath)[:3]
-                        stream_n += st   
-                    for fpath in filelist_e:
-                        st = read(fpath)
-                        #for tr in st:
-                        #    if tr.stats.station == "":
-                        #        tr.stats.station = os.path.basename(fpath)[:3]
-                        stream_e += st               
-
-            # wait for the first process (mpi_rank=0, root=0) to get to this point      
-            # share read-in data among processes
-            #mpi_comm.Barrier()
-            stream_z = mpi_comm.bcast(stream_z,root=0)
-            stream_n = mpi_comm.bcast(stream_n,root=0)
-            stream_e = mpi_comm.bcast(stream_e,root=0)
-            worklist = mpi_comm.bcast(worklist,root=0)
-
-            corrcomp = [c for c in comp_correlations if c != "ZZ"]
+                filelist = get_julday_filelist(year,julday,component,
+                                               station_ids,window_length)
+                for fpath in filelist:
+                    st = read(fpath)
+                    stream += st
             
-            print("Working on",len(worklist[mpi_rank::mpi_size]),"station pairs",
+        # wait for the first process (mpi_rank=0, root=0) to get to this point      
+        # share read-in data among processes
+        #mpi_comm.Barrier()
+        stream = mpi_comm.bcast(stream,root=0)
+        worklist = mpi_comm.bcast(worklist,root=0)
+        
+        if len(stream)==0:
+            if mpi_rank==0:
+                print("no data in stream")
+            continue
+            
+        print("\nCorrelation of",comp_correlations,"components\n",
+              datetime.datetime.now(),"\nYear:",year,"Julday:",julday,
+              file=flog,flush=True)                
+            
+        print("Working on",len(worklist[mpi_rank::mpi_size]),"station pairs",
                   file=flog,flush=True)
-            for i,pair in enumerate(worklist[mpi_rank::mpi_size]):
-                
-                if i%10000 == 0:
-                    print("Processed",i,"/",len(worklist[mpi_rank::mpi_size]),
-                          "pairs",file=flog,flush=True)                
-                process_noise((stream_z+stream_n+stream_e),pair,corrcomp,
-                              window_length,overlap,year,day,flog)
-               
-            print("Finished processing horizontal components for one correlation day.",file=flog,flush=True)                      
+        for i,pair in enumerate(worklist[mpi_rank::mpi_size]):
+            
+            if i%10000 == 0:
+                print("Processed",i,"/",len(worklist[mpi_rank::mpi_size]),
+                      "pairs",file=flog,flush=True)                
+            process_noise(stream,pair,comp_correlations,
+                          window_length,overlap,year,julday,flog)
+           
+        print("Finished processing components for one correlation day.",
+              file=flog,flush=True)                      
 
-            stream_z = Stream()
-            stream_n = Stream()    
-            stream_e = Stream()    
+        # empty stream
+        stream = Stream()  
                     
         
     flog.close()
