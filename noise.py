@@ -11,7 +11,8 @@ Updated December 2021
   zero crossing
 - The get_smooth_pv function does a quality check on the zero crossings based
   on the real part of the cross correlation spectrum. The elliptical kernels
-  not rotated anymore along picked dispersion curve to avoid biased picks.
+  close to the picked dispersion curve are not rotated anymore to avoid biased
+  picks.
 
 Updated September 2021
 - The adapt timespan function has been rewritten to work in more general cases.
