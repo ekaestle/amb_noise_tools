@@ -42,9 +42,12 @@ plt.title("Cross-correlation spectrum")
 plt.xlabel("Frequency")
 plt.legend(numpoints=1)
 plt.subplot(2,2,2)
-plt.plot(crossings[:,0],crossings[:,1],'o',ms=8)
+for branchidx in np.unique(crossings[:,2]):
+    plt.plot(crossings[crossings[:,2]==branchidx,0],
+             crossings[crossings[:,2]==branchidx,1],'o',
+             markeredgecolor='black',ms=6,linewidth=0.1)
 plt.plot(ref_curve[:,0],ref_curve[:,1],label='reference curve')
-plt.plot(phase_vel[:,0],phase_vel[:,1],'o',ms=4,label='picks')
+plt.plot(phase_vel[:,0],phase_vel[:,1],'kx',ms=8,label='picks')
 plt.xlabel("Frequency")
 plt.ylabel("Velocity [km/s]")
 plt.title("Zero crossings")

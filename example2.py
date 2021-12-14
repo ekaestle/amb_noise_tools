@@ -110,7 +110,7 @@ if __name__ == '__main__':
                                         
     crossings,phase_vel = noise.get_smooth_pv(
         freq,smoothed,dist/1000.,ref_curve,freqmin=0.004,freqmax=0.25, 
-        min_vel=1.5, max_vel=5.5,filt_width=5,filt_height=1.0,
+        min_vel=1.5, max_vel=5.5,filt_width=3,filt_height=1.0,
         pick_threshold=2.0,horizontal_polarization=True,
         smooth_spectrum=False,plotting=True)
     
@@ -121,7 +121,10 @@ if __name__ == '__main__':
     plt.title("Cross-correlation spectrum Love")
     plt.xlabel("Frequency")
     plt.subplot(2,2,2)
-    plt.plot(crossings[:,0],crossings[:,1],'o',ms=10)
+    for branchidx in np.unique(crossings[:,2]):
+        plt.plot(crossings[crossings[:,2]==branchidx,0],
+                 crossings[crossings[:,2]==branchidx,1],'o',
+                 markeredgecolor='black',ms=6,linewidth=0.1)
     plt.plot(ref_curve[:,0],ref_curve[:,1],label='reference curve')
     plt.plot(phase_vel[:,0],phase_vel[:,1],'o',ms=5,label='picks')
     plt.xlabel("Frequency")

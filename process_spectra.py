@@ -45,10 +45,10 @@ max_vel=5.0 # maximum velocity ...
 min_common_days = 2 # recommended to be at least half a year
 #min_amplitude = 0.05 # minimum allowed amplitude of the cc spectrum with respect to its maximum (should be tested, otherwise set to 0)
 pick_thresh = 2.0
-horizontal_polarization=False # If True, TT or RR cross-correlations are calculated (additional J2 term). If False, only ZZ
+horizontal_polarization=True # If True, TT or RR cross-correlations are calculated (additional J2 term). If False, only ZZ
 # note: no asymmetric correlations are currently supported (eg RZ or TR are not supported)
-spectra_path = "./cross_correlation_spectra/ZZ/" # path where spectra files are stored (filenames are expected to have both station names, as the ones created by create_ccs.py. Otherwise adapt stat1 = fname.split("/")[-1].split("_")[0] below.)
-phase_vel_path='./phase_vel_curves/' # path where to save the cross_correlation spectra
+spectra_path = "./cross_correlation_spectra/TT/" # path where spectra files are stored (filenames are expected to have both station names, as the ones created by create_ccs.py. Otherwise adapt stat1 = fname.split("/")[-1].split("_")[0] below.)
+phase_vel_path='./phase_vel_curves_tt/' # path where to save the cross_correlation spectra
 ref_curve = np.loadtxt("Average_phase_velocity_rayleigh") # reference curve for picking
 statlist_file = "./statlist.txt" # location of station list file (3 columns, statname, lat, lon)
 velocity_filter = True # do a velocity filter between min and max velocity, recommended
@@ -86,7 +86,6 @@ correlation files have a different naming scheme. Please check if you encounter
 any errors.
 - feel free to contact me if you have questions: emanuel.kaestle@fu-berlin.de
 """
-
 if (velocity_filter==False and snr_filter_time_domain) or (velocity_filter==False and snr_filter_time_domain):
     print("snr filter only works with velocity filter activated!")
     sys.exit()
@@ -131,10 +130,6 @@ def snr_cc(symmetric_cc,df,distance,cmin,cmax,intervals,plotting=False):
         
 if np.mean(ref_curve[:,1])>1000:
     ref_curve[:,1]/=1000.
-stat_dict = {}
-statlist = np.loadtxt(statlist_file,dtype='str')
-for line in statlist:
-    stat_dict[line[0]] = (float(line[1]),float(line[2]))
     
 statpair = False
 try:
@@ -146,26 +141,28 @@ try:
 except:
     pass
 
-#""" for testing """
-#station1 = 'FR.CALF'
-#station2 = 'Z3.A184A'
-#statpair = True
-#plotresult=True
-#""" """
+# """ for testing """
+# station1 = 'FR.BSTF'
+# station2 = 'Z3.A216A'
+# statpair = True
+# plotresult=True
+# """ """
 
     
 phase_vel_path_lq = os.path.abspath(phase_vel_path)+"_quality_check_failed/"
+figure_path = os.path.abspath(phase_vel_path)+"_figures/"
+figure_path_failed = os.path.abspath(phase_vel_path)+"_figures_quality_check_failed/"
+
 spectralist = []
 if mpi_rank==0:
     if not os.path.exists(phase_vel_path):
         os.makedirs(phase_vel_path)
     if not os.path.exists(phase_vel_path_lq):
         os.makedirs(phase_vel_path_lq)
-    try:
-        os.makedirs("./figures_zz")
-        os.makedirs("./figures_zz_qcheck_failed")
-    except:
-        pass
+    if not os.path.exists(figure_path):
+        os.makedirs(figure_path)
+    if not os.path.exists(figure_path_failed):
+        os.makedirs(figure_path_failed)
     
     spectralist = glob.glob(os.path.join(spectra_path,"*")) 
     phase_vel_curves = glob.glob(os.path.join(phase_vel_path,"*"))
@@ -174,7 +171,7 @@ if mpi_rank==0:
     
     if not statpair:
         for fpath in phase_vel_curves:
-            fname = fpath.split("/")[-1].replace("_curve","")
+            fname = fpath.split("/")[-1].replace(".curve",".pkl")
             fname_remove = os.path.join(spectra_path,fname)
             try:
                 spectralist.remove(fname_remove)
@@ -192,7 +189,7 @@ spectralist = mpi_comm.bcast(spectralist,root=0)
 avg_wavelength = interp1d(ref_curve[:,0],ref_curve[:,1]/ref_curve[:,0],bounds_error=False,fill_value='extrapolate')
 ref_curve_fu = interp1d(ref_curve[:,0],ref_curve[:,1])
 quality_check_collection = []
-    
+
 time_start=datetime.datetime.now()
 print("Processing",len(spectralist),"cross-correlation spectra.")
 m=1
@@ -205,9 +202,9 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         if not (station1 in fname and station2 in fname):
             continue
         else:
-            print("\n # # # # # # # # # # # # # # # # \n",fname)
+            print(fname)
     if plotresult:
-        print(fname)
+        print("\n # # # # # # # # # # # # # # # # \n",fname)
     if float(i)/len(spectralist) > m*0.01:
         time_passed = (datetime.datetime.now()-time_start).total_seconds()
         time_left = (100.-m)/m * time_passed
@@ -215,10 +212,6 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         print(fails,"/",i,"cross-correlations could not be processed.")
         m+=1
         
-    #spectrum = np.loadtxt(fname)
-    #tr = read(fname)[0]
-    #crosscorr = tr.data
-    #spectrum = np.fft.rfft(np.fft.fftshift(crosscorr))
     try:
         with open(fname, "rb") as f:
             ccdict = pickle.load(f)
@@ -226,7 +219,7 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         print("\nError: could not read file",fname,"\n\n")
         continue
     if len(ccdict['corrdays']) < min_common_days:
-        print("    skipping: only %d correlation days" %(len(ccdict['corrdays'])))
+        print("    ",os.path.basename(fname),"skipping: only %d correlation days" %(len(ccdict['corrdays'])))
         continue
     spectrum = ccdict['spectrum']
     freqax = ccdict['freq']
@@ -234,13 +227,9 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
     stat2 = ccdict['station2']['id']
     dist = ccdict['dist']
     
-    #if dist>400:
-    #    continue
-    
     az = ccdict['az']
     baz = ccdict['baz']   
     dt = 1./freqax[-1]/2.
-
 
     # determine min/max frequency dependent on the wavelength criteria and the
     # average wavelength (avg wavelength from reference curve)
@@ -353,95 +342,79 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         if plotresult:
             print("\n    ---",qualitycheck,"---")
 
-        try:
-            try:
-                crossings,phase_vel = noise.get_smooth_pv(freqax,ccspec,dist,ref_curve,
-                             freqmin=min_freq,freqmax=max_freq, min_vel=min_vel, max_vel=max_vel,
-                             filt_width=8,filt_height=0.9,pick_threshold=pick_thresh,
-                           horizontal_polarization=horizontal_polarization, smooth_spectrum=not(velocity_filter),
-                           plotting=show_pickplots)
-            except:      
-                crossings,phase_vel = noise.get_smooth_pv(freqax,ccspec,dist,ref_curve,
-                             freqmin=min_freq,freqmax=max_freq, min_vel=min_vel, max_vel=max_vel,
-                             filt_width=6,filt_height=0.7,pick_threshold=pick_thresh*1.2,
-                           horizontal_polarization=horizontal_polarization, smooth_spectrum=not(velocity_filter),
-                           plotting=show_pickplots)            
-    
-            if snr_filter_frequency_domain or snr_filter_time_domain:
-                freq_filtered = np.array([])
-                phase_vel_filtered = np.array([])
-                for i in range(len(intervals)-1):
-                    if snr_filt[i]:
-                        lim1 = intervals[i]
-                        lim2 = intervals[i+1]
-                        phase_vel_filtered = np.append(phase_vel_filtered,phase_vel[:,1][(lim1<=phase_vel[:,0])*(phase_vel[:,0]<lim2)])
-                        freq_filtered = np.append(freq_filtered,phase_vel[:,0][(lim1<=phase_vel[:,0])*(phase_vel[:,0]<lim2)])
-                if statpair:
-                    plt.figure()
-                    plt.plot(1./phase_vel[:,0],phase_vel[:,1],'o',ms=6,label='without snr filter')
-                    plt.plot(1./freq_filtered,phase_vel_filtered,'o',ms=4,label='with snr filter')
-                    plt.legend()
-                phase_vel = np.column_stack((freq_filtered,phase_vel_filtered))
-        except:
-            if qualitycheck=='symmetric':
-                break
-            else:
-                continue
-
-        phasevel_curves.append(phase_vel)
+        crossings,phase_vel = noise.get_smooth_pv(
+            freqax,ccspec,dist,ref_curve,freqmin=min_freq,freqmax=max_freq,
+            min_vel=min_vel, max_vel=max_vel,filt_width=3,filt_height=1.2,
+            pick_threshold=pick_thresh,horizontal_polarization=horizontal_polarization,
+            smooth_spectrum=not(velocity_filter),plotting=show_pickplots)
         
         if qualitycheck=='symmetric':
+            phase_vel_final = phase_vel # save only symmetric result
             spec_symm = spectrum.copy()
             crossings_symm = crossings.copy()
             tcorr_symm = TCORR.copy()
             corr_symm = CORR.copy()
-
-    if len(phasevel_curves) == 0:
-        fails += 1
-        continue
-
-    accepted = False
-    phase_vel = phasevel_curves[0] # save only symmetric result
-    
-    
-    if len(phasevel_curves)==3:
+            
+        if len(phase_vel)==0:
+            if qualitycheck=='symmetric':
+                fails += 1
+                break
+            else:
+                continue
+            
+        if snr_filter_frequency_domain or snr_filter_time_domain:
+            freq_filtered = np.array([])
+            phase_vel_filtered = np.array([])
+            for i in range(len(intervals)-1):
+                if snr_filt[i]:
+                    lim1 = intervals[i]
+                    lim2 = intervals[i+1]
+                    phase_vel_filtered = np.append(phase_vel_filtered,phase_vel[:,1][(lim1<=phase_vel[:,0])*(phase_vel[:,0]<lim2)])
+                    freq_filtered = np.append(freq_filtered,phase_vel[:,0][(lim1<=phase_vel[:,0])*(phase_vel[:,0]<lim2)])
+            if statpair:
+                plt.figure()
+                plt.plot(1./phase_vel[:,0],phase_vel[:,1],'o',ms=6,label='without snr filter')
+                plt.plot(1./freq_filtered,phase_vel_filtered,'o',ms=4,label='with snr filter')
+                plt.legend()
+            phase_vel = np.column_stack((freq_filtered,phase_vel_filtered))
+                     
+        phasevel_curves.append(phase_vel)
         
-        fw_bw_diff = np.abs(np.interp(ref_curve[:,0],phasevel_curves[1][:,0],phasevel_curves[1][:,1],left=np.nan,right=np.nan)-
-                            np.interp(ref_curve[:,0],phasevel_curves[2][:,0],phasevel_curves[2][:,1],left=np.nan,right=np.nan))
-        
+       
+    # do a quality check by comparing the phase velocities from picking only
+    # the positive and the negative lag time correlation
+    if len(phasevel_curves)==3 and check_pos_neg_lagtime_correlations:        
+        fw_bw_diff = np.abs(
+            np.interp(ref_curve[:,0],phasevel_curves[1][:,0],
+                      phasevel_curves[1][:,1],left=np.nan,right=np.nan)-
+            np.interp(ref_curve[:,0],phasevel_curves[2][:,0],
+                      phasevel_curves[2][:,1],left=np.nan,right=np.nan))
         quality_check_collection.append(fw_bw_diff)
-        
-    else:
-        
-        quality_check_collection.append(np.nan)
-    
-    
-    if len(phasevel_curves)==3 and check_pos_neg_lagtime_correlations:
-        
-        accepted = True
-        
-        if np.nanmean(fw_bw_diff) > 0.3 or np.sum(~np.isnan(fw_bw_diff))<10:
-            print("    quality check failed for station pair",stat1,stat2)
+        if np.nanmean(fw_bw_diff) > 0.3 or np.sum(~np.isnan(fw_bw_diff)) < 10:
+            print("     quality check failed for station pair",stat1,stat2)
             accepted = False
         else:
             accepted = True
-  
-        #plt.figure()
-        #plt.plot(fax,np.interp(fax,phasevel_curves[1][:,0],phasevel_curves[1][:,1]))
-        #plt.plot(fax,np.interp(fax,phasevel_curves[2][:,0],phasevel_curves[2][:,1]))
-        #plt.plot(phase_vel[:,0],phase_vel[:,1])
-        #plt.show()
 
-    elif len(phasevel_curves)>0 and not check_pos_neg_lagtime_correlations:
-        
-        accepted = True
-        
+    elif len(phase_vel_final)>0 and not check_pos_neg_lagtime_correlations:
+        quality_check_collection.append(np.nan)
+        accepted = True  
 
-    if accepted:
-        np.savetxt(os.path.join(phase_vel_path,fname.split("/")[-1]+"_curve"),phase_vel,fmt="%.5f %.3f")
     else:
-        np.savetxt(os.path.join(phase_vel_path_lq+fname.split("/")[-1]+"_curve"),phase_vel,fmt="%.5f %.3f")
-            
+        quality_check_collection.append(np.nan)
+        accepted = False
+                
+    outfilename = os.path.basename(fname)
+    outfilename = outfilename.replace("."+outfilename.split(".")[-1],".curve")
+    if accepted:
+        np.savetxt(os.path.join(phase_vel_path,outfilename),phase_vel_final,
+                   fmt="%.5f %.3f")
+    elif len(phase_vel_final)>0:
+        np.savetxt(os.path.join(phase_vel_path_lq,outfilename),phase_vel_final,
+                   fmt="%.5f %.3f")
+        
+    counter += 1
+    
     if statpair or plotresult or counter%500 == 0:
         plt.ioff()
         fig = plt.figure(figsize=(16,8))
@@ -453,29 +426,33 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
             plt.plot((np.arange(len(spec_symm)*2-2)-len(spec_symm)+1)*dt,
                      np.fft.fftshift(tcorr_symm),'r--',linewidth=0.6,label='cc filtered and symmetric')
         plt.legend(numpoints=1)
-        plt.xlim(dist/min_vel*-2.,dist/min_vel*2)
+        plt.xlim(dist/min_vel*-1.3,dist/min_vel*1.3)
         plt.title("CC")
         plt.xlabel('time lag [s]')
         plt.subplot(222)
-        plt.plot(freqax,np.real(spec_symm),'k',linewidth=0.8,label='cc raw')
+        plt.plot(freqax,np.real(spec_symm),'k',linewidth=1.2,label='cc raw')
         if velocity_filter:
-            plt.plot(freqax,np.real(corr_symm),'r--',linewidth=0.6,label='cc filtered')
+            plt.plot(freqax,np.real(corr_symm),'r--',linewidth=1,label='cc filtered')
         plt.legend(numpoints=1)
         plt.title("real CC spectrum")
         plt.xlabel('frequency [Hz]')
         plt.xlim(min_freq,max_freq)
         ax = plt.subplot(223)
-        plt.plot(1./phase_vel[:,0],phase_vel[:,1],'ro',ms=4,label='picked phase vels')
+        if len(phase_vel_final)>0:
+            plt.plot(1./phase_vel_final[:,0],phase_vel_final[:,1],'ro',ms=4,label='picked phase vels')
         plt.plot(1./crossings_symm[:,0],crossings_symm[:,1],'ko',ms=1,label='crossings')
         plt.plot(1./ref_curve[:,0],ref_curve[:,1],label='reference curve')
         #ax.set_xscale('log')
-        plt.xlim(np.max([1./phase_vel[-1,0]/2,1.0]),1./ref_curve[0,0])
+        if len(phase_vel_final)>0:
+            plt.xlim(np.max([1./phase_vel_final[-1,0]/2,1.0]),1./ref_curve[0,0])
         plt.legend(numpoints=1)
-        plt.xlim(min_period,1./min_freq)
+        plt.xlim(1./np.max(crossings[:,0]),1./min_freq)
+        plt.gca().set_xscale('log')
         plt.xlabel('period [s]')
         plt.ylabel('velocity [km/s]')
         plt.subplot(224)
-        plt.plot(1./phase_vel[:,0],phase_vel[:,1],'k',label='picked final phase vels')
+        if len(phase_vel_final)>0:
+            plt.plot(1./phase_vel_final[:,0],phase_vel_final[:,1],'k',label='picked final phase vels')
         if len(phasevel_curves)==3:
             plt.plot(1./phasevel_curves[1][:,0],phasevel_curves[1][:,1],'--',label='picked from pos time correlation')
             plt.plot(1./phasevel_curves[2][:,0],phasevel_curves[2][:,1],'--',label='picked from neg time correlation')
@@ -483,7 +460,7 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         plt.xlabel('period [s]')
         plt.ylabel('velocity [km/s]')
         if snr_filter_frequency_domain or snr_filter_time_domain:
-            y0=np.min(phase_vel[:,1])-0.2
+            y0=np.min(phase_vel_final[:,1])-0.2
             for i in range(len(intervals)-1):
                 lim1 = intervals[i]
                 lim2 = intervals[i+1]
@@ -496,18 +473,19 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
             plt.plot([],[],lw=3,color='red',label='snr filter: discarded')
             plt.plot([],[],lw=3,color='green',label='snr filter: accepted')
             plt.legend(numpoints=1)
-        plt.xlim(0,100)
+        plt.gca().set_xscale('log')
+        plt.xlim(1./np.max(crossings[:,0]),100)
         plt.ylim(min_vel,max_vel)
         if accepted:
-            print("accepted")
-            plt.savefig("figures_zz/"+stat1+"_"+stat2+".png",bbox_inches='tight')
+            if statpair or plotresult:
+                print("accepted")
+            plt.savefig(figure_path+stat1+"_"+stat2+".png",bbox_inches='tight')
         else:
             print("quality check failed")
-            plt.savefig("figures_zz_qcheck_failed/"+stat1+"_"+stat2+".png",bbox_inches='tight')
+            plt.savefig(figure_path_failed+stat1+"_"+stat2+".png",bbox_inches='tight')
+        if statpair:
+            plt.show()
         plt.close(fig)
-        #plt.show()
-
-    counter += 1
 
 
 #%%       
@@ -529,7 +507,7 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
 #        plt.title("real CC spectrum")
 #        plt.xlabel('frequency [Hz]')
 #        plt.subplot(223)
-#        plt.plot(1./phase_vel[:,0],phase_vel[:,1],'ro',ms=4,label='picked phase vels')
+#        plt.plot(1./phase_vel_final[:,0],phase_vel_final[:,1],'ro',ms=4,label='picked phase vels')
 #        plt.plot(1./crossings_symm[:,0],crossings_symm[:,1],'o',ms=2,label='crossings')
 #        plt.plot(1./ref_curve[:,0],ref_curve[:,1],label='reference curve')
 #        plt.legend(numpoints=1)
@@ -537,11 +515,11 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
 #        plt.xlabel('period [s]')
 #        plt.ylabel('velocity [km/s]')
 #        plt.subplot(224)
-#        plt.plot(1./phase_vel[:,0],phase_vel[:,1])
+#        plt.plot(1./phase_vel_final[:,0],phase_vel_final[:,1])
 #        plt.xlabel('period [s]')
 #        plt.ylabel('velocity [km/s]')
 #        if snr_filter_frequency_domain or snr_filter_time_domain:
-#            y0=np.min(phase_vel[:,1])-0.2
+#            y0=np.min(phase_vel_final[:,1])-0.2
 #            for i in range(len(intervals)-1):
 #                lim1 = intervals[i]
 #                lim2 = intervals[i+1]
