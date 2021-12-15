@@ -193,6 +193,12 @@ def adapt_timespan(st1,st2=None,min_overlap=0.,correct_timeshift=True,
         print("Warning: the interpolate option works only with correct_timeshift=True")
     
     st1 = Stream(st1) if isinstance(st1, Trace) else st1
+
+    if len(st1) == 0:
+        if st2 is None:
+            return Stream()
+        else:
+            return Stream(),Stream()
     
     if st2 is None:
         # create a dummy trace

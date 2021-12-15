@@ -163,6 +163,9 @@ def process_noise(stream,pair,comp_correlations,window_length,overlap,year,julda
             
             st1 = stream.select(network=net1,station=sta1,component=components[0])
             st2 = stream.select(network=net1,station=sta1,component=components[1])
+
+            if len(st1) == 0 or len(st2) == 0:
+                continue
             
             st1,st2 = noise.adapt_timespan(st1,st2,min_overlap=window_length,
                                            interpolate=True,copystreams=True)
