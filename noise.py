@@ -1894,6 +1894,9 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
     peakamps = np.interp(w_axis,np.append(w_axis[0],w_axis[0]+np.cumsum(expected_fstep)),peakamps)
     bad_quality[np.append(False,np.diff(w_axis)>1.5*expected_fstep)] = True
     bad_quality[crossamps < 0.5*peakamps] = True
+    for i in range(1,len(bad_quality)-1):
+        if bad_quality[i-1] and bad_quality[i+1]:
+            bad_quality[i] = True
     
     # frequency at which to start picking:
     freq_pick_start = w_axis[~bad_quality*(w_axis>=freqmin)]
