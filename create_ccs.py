@@ -162,7 +162,7 @@ def process_noise(stream,pair,comp_correlations,window_length,overlap,year,julda
         if components[0] in 'ZNE' and components[1] in 'ZNE':
             
             st1 = stream.select(network=net1,station=sta1,component=components[0])
-            st2 = stream.select(network=net1,station=sta1,component=components[1])
+            st2 = stream.select(network=net2,station=sta2,component=components[1])
 
             if len(st1) == 0 or len(st2) == 0:
                 continue

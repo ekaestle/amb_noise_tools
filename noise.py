@@ -1248,6 +1248,18 @@ def get_smooth_pv(frequencies,corr_spectrum,interstation_distance,ref_curve,
     
     
     def dv_cycle_jump(frequency,velocity,interstation_distance):
+        """
+        The zero crossings of the Bessel function have a spacing of pi
+        -> J(z_m) = 0 for z_m = n*pi
+        We can ignore every second zero crossing since it has a different 
+        crossing direction. Therefore we have a 2pi ambiguity between parallel
+        branches (z_m1 = 2pi*n = (2pi*f*d)/c1)
+        -> c1 = (2pi*f*d)/(2pi*n)
+        c1-c2 = (f*d)/n - (f*d)/(n+1)
+        n = (f*d)/c1
+        c1-c2 = (f*d)/((f*d)/c1) - (f*d)/((f*d)/c1+1) = c1 - 1/(1/c1 + 1/(f*d))
+
+        """
         
         return np.abs(velocity-1./(1./(interstation_distance*frequency) + 
                                    1./velocity))
