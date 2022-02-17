@@ -27,7 +27,7 @@ dist,az,baz = gps2dist_azimuth(tr1.stats.sac.stla,tr1.stats.sac.stlo,
 
 freq,xcorr,n_corr_wins = noise.noisecorr(tr1,tr2,window_length=3600.,overlap=0.5)
  
-smoothed = noise.velocity_filter(freq,xcorr,dist/1000.,cmin=1.5,cmax=5.0,return_all=False)
+smoothed = noise.velocity_filter(freq,xcorr,dist/1000.,velband=(6.0,5.0,1.5,0.5),return_all=False)
                                     
 crossings,phase_vel = noise.extract_phase_velocity(freq,smoothed,dist/1000.,ref_curve,\
                          freqmin=0.004,freqmax=0.25, min_vel=1.5, max_vel=5.0,min_amp=0.0,\

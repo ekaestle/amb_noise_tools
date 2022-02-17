@@ -6,6 +6,22 @@ developed by Kees Weemstra.
 Autor: Emanuel Kaestle (emanuel.kaestle@fu-berlin.de)
 
 # # # Updates # # #
+Updated February 2022
+- bugfix in adapt_timespan: the previous function did no always detect if
+  one of the streams was empty.
+- The noisecorr function does now the correlation with the scipy correlate
+  function. This requires additional Fourier transforms and is thus slower.
+  However, the signal outside the data window is now zero padded which is 
+  the expected behaviour of a correlation. The previous approach implicitly
+  assumed that the signal was periodicly repeating (differences are very small).
+- The velocity_filter function has been changed to work like a bandpass filter.
+  The user has to choose the passband velocities now and the velocity band in
+  which the signal is tapered as velband=(6.0,5.0,1.5,0.5), i.e. passband 
+  between 5km/s and 1.5km/s, taper between 6-5km/s and 1.5-0.5km/s.
+  The previous version was working with a percentage taper which gave some-
+  times weird results if the available timespan was too short to fit the
+  taper.
+
 Updated December 2021
 - The get_zero_crossings function now returns also a branch index for each
   zero crossing
@@ -43,7 +59,7 @@ import numpy as np
 from scipy.interpolate import interp1d,griddata
 from scipy.special import jn_zeros,jv
 from scipy.stats import linregress
-from scipy.signal import detrend
+from scipy.signal import detrend, correlate
 from obspy.signal.invsim import cosine_taper, waterlevel
 from scipy.signal import find_peaks
 from obspy.core import Stream, Trace
@@ -193,12 +209,6 @@ def adapt_timespan(st1,st2=None,min_overlap=0.,correct_timeshift=True,
         print("Warning: the interpolate option works only with correct_timeshift=True")
     
     st1 = Stream(st1) if isinstance(st1, Trace) else st1
-
-    if len(st1) == 0:
-        if st2 is None:
-            return Stream()
-        else:
-            return Stream(),Stream()
     
     if st2 is None:
         # create a dummy trace
@@ -217,7 +227,7 @@ def adapt_timespan(st1,st2=None,min_overlap=0.,correct_timeshift=True,
     
     if single_stream and len(st1)==0:
         return Stream()
-    elif len(st2)==0:
+    elif len(st1)==0 or len(st2)==0:
         return Stream(),Stream()
 
     # if the sampling rate is not identical, it may not be possible to cut
@@ -261,9 +271,9 @@ def adapt_timespan(st1,st2=None,min_overlap=0.,correct_timeshift=True,
     
     ids = ids1+ids2
     
-    if single_stream and len(st1)==0:
+    if single_stream and len(stream1)==0:
         return Stream()
-    elif len(st2)==0:
+    elif len(stream2)==0:
         return Stream(),Stream()
     
     # remove overlapping traces of same trace-id within each stream
@@ -515,27 +525,44 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
         d2 = detrend(d2,type='constant')
         
         if onebit:
-            # 1 bit normalization - doesn't work very convincingly like that(?)
+            # 1 bit normalization
             d1=np.sign(d1)
             d2=np.sign(d2)
         
         if cos_taper: # tapering in the time domain
             d1*=taper
             d2*=taper
-        
-        # time -> freqency domain
-        D1=np.fft.rfft(d1)
-        D2=np.fft.rfft(d2)
-        
+               
         if whiten:
-            #D1=np.exp(1j * np.angle(D1)) # too slow
+            # time -> freqency domain
+            D1=np.fft.rfft(d1)
+            D2=np.fft.rfft(d2)
+            # slower compared to waterlevel deconvolution
+            #D1=np.exp(1j * np.angle(D1))
             #D2=np.exp(1j * np.angle(D2))
             # water level calculated depending on the spectral amplitudes
             D1/=np.abs(D1)+waterlevel(D1,water_level)
             D2/=np.abs(D2)+waterlevel(D2,water_level)
+            d1 = np.fft.irfft(D1)
+            d2 = np.fft.irfft(D2)
             
-        # actual correlation in the frequency domain
-        CORR=np.conj(D1)*D2
+        # correlation
+        # Comment on previous version (before Feb. 2022):
+            # previous versions worked with a single FFT and the correlation
+            # was performed by multiplication of signal1 with the complex
+            # conjugate of signal2. This in principle correct, but implicitly
+            # assumes that the signal is infinitely periodic (at time tmax,
+            # the signal starts again at t0). Normally, however, the time 
+            # domain signal is zero-padded to correlate signals of same length.
+            # the error is probably small/negligible. It becomes only visible
+            # at large lag times.
+            # the current procedure needs more back and forth FFTs but does
+            # the correlation as expected (with zero padding)
+        CORR=correlate(d1,d2,mode='same',method='fft')
+        # shifting and going back to the frequency domain. Zero lag
+        # time is not in the center anymore after shifting. But shifting is
+        # necessary to be able to directly get the Bessel function.
+        CORR=np.fft.rfft(np.fft.ifftshift(CORR))
         
         if np.isnan(CORR).any() or np.isinf(CORR).any():
             raise Exception("nan/inf value in correlation!")
@@ -558,13 +585,16 @@ def noisecorr(trace1, trace2, window_length=3600., overlap=0.5,\
         raise Exception("cross correlation calculation failed.")
 
 
-def velocity_filter(freq,corr_spectrum,interstation_distance,cmin=1.0,cmax=5.0,
-                    return_all=False):
+def velocity_filter(freq,corr_spectrum,interstation_distance,
+                    velband=(6.0,5.0,1.5,0.5),return_all=False):
     """
     Returns the velocity-filtered cross-correlation spectrum (idea from 
     Sadeghisorkhani). Filter is applied in the time domain after inverse FFT. 
-    Signals slower than cmin and faster than cmax are set to zero. The filter 
-    window is cosine-tapered. This filter can improve the SNR significantly.
+    Signals arriving with velocities outside the velband are set to zero.
+    The velband works like a bandpass: Outside the velocity limits the signal
+    is set to zero, between the corners there is a cosine taper and between
+    the two middle velocities the signal is unaltered.
+    This filter can improve the SNR significantly.
     This filter is zero-phase because it is symmetric in the time domain.
 
     :type freq: :class:`~numpy.ndarray`
@@ -574,10 +604,10 @@ def velocity_filter(freq,corr_spectrum,interstation_distance,cmin=1.0,cmax=5.0,
         valued or real.
     :type interstation_distance: float
     :param interstation_distance: Distance between station pair in km.
-    :type cmin: float
-    :param cmin: Minimum velocity of the signals of interest in km/s.
-    :type cmax: float
-    :param cmax: Maximum velocity of the signals of interest in km/s.
+    :type velband: tuple of floats
+    :param velband: Gives the range of allowed velocities similar to a bandpass
+        filter in km/s. The upper/lower limit can be deactivated by setting very 
+        high/low values.
     :type return_all: bool
     :param return_all: If ``True``, the function returns for arrays: the frequency axis, the filtered
         cc-spectrum, the time-shift axis and the filtered time-domain cross-correlation. Otherwise,
@@ -588,16 +618,31 @@ def velocity_filter(freq,corr_spectrum,interstation_distance,cmin=1.0,cmax=5.0,
         If return_all=``True``, it also returns the frequency axis, the time-shift axis and the filtered
         time-domain cross-correlation.
     """
-    dt = 1./(2.*freq[-1])
-    idx_tmin = int((interstation_distance/cmax)/dt*0.95) # 5percent extra for taper
-    idx_tmax = int((interstation_distance/cmin)/dt*1.05) # 5% extra for taper
-    vel_filt_window = cosine_taper(idx_tmax-idx_tmin,p=0.1)
+    
+    dt = 1 / (2 * freq[-1])
     tcorr = np.fft.irfft(corr_spectrum)
-    vel_filt = np.zeros(len(tcorr))
-    vel_filt[idx_tmin:idx_tmax] = vel_filt_window
-    vel_filt[-idx_tmax+1:-idx_tmin+1] = vel_filt_window #+1 is just for symmetry reasons
+    
+    c1,c2,c3,c4 = velband
+    idx1 = int(interstation_distance/c1/dt)
+    idx2 = int(interstation_distance/c2/dt)
+    idx3 = int(interstation_distance/c3/dt)
+    idx4 = int(interstation_distance/c4/dt)
+    
+    vel_filt = np.zeros(int(len(tcorr)/2))
+    idx1 = np.min([idx1,idx2-1])
+    if idx2>=len(vel_filt):
+        raise Exception("correlation trace too short. Signals arriving with {c2} are already beyond the maximum lag time.")
+    idx3 = np.min([idx3,len(vel_filt)-2])
+    idx4 = np.min([idx4,len(vel_filt)-1])
+    vel_filt[idx1:idx2] = np.cos(np.linspace(0,np.pi/2.,idx2-idx1))[::-1]
+    vel_filt[idx2:idx3] = 1.
+    vel_filt[idx3:idx4] = np.cos(np.linspace(0,np.pi/2.,idx4-idx3))
+    
+    vel_filt = np.hstack((vel_filt,np.roll(vel_filt[::-1],1)))
+               
     tcorr *= vel_filt
     corr = np.fft.rfft(tcorr)
+    
     if return_all:
         time = (np.arange(len(tcorr))-len(tcorr)/2.)*dt
         tcorr = np.fft.ifftshift(tcorr)

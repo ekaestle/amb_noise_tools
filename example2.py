@@ -105,8 +105,9 @@ if __name__ == '__main__':
     corr_spectrum/=no_spectra
     
     
-    smoothed = noise.velocity_filter(freq,corr_spectrum,dist/1000.,cmin=1.5,
-                                     cmax=5.5,return_all=False)
+    smoothed = noise.velocity_filter(freq,corr_spectrum,dist/1000.,
+                                     velband=(6.0,5.5,1.5,0.5),
+                                     return_all=False)
                                         
     crossings,phase_vel = noise.get_smooth_pv(
         freq,smoothed,dist/1000.,ref_curve,freqmin=0.004,freqmax=0.25, 
