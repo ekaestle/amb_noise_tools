@@ -1,8 +1,12 @@
-AMBIENT NOISE PROCESSING TOOLS
-February 2021
+# AMBIENT NOISE PROCESSING TOOLS
+February 2022
 This a set of Python functions that can be used to calculate ambient noise cross correlations and to extract phase velocities. Initial Fortran scripts developed by Kees Weemstra (Delft) and modified and extended by Emanuel Kaestle (UPMC Paris, FU Berlin).
 Please contact Emanuel Kaestle if you have any questions.
 
+## SeisLib
+Also check out SeisLib, which includes a recent implementation of the get_smooth_pv function (https://github.com/fmagrini/seislib)!
+
+## Citing
 This work is documented by three articles. At least the more recent one should be cited by anyone who uses this code:
 
 Kaestle, E., Molinari, I., Boschi, L., Kissling, E., 2021. Azimuthal anisotropy from Eikonal Tomography: example from ambient-noise measurements in the AlpArray network. Geophys. J. Int., doi:10.1093/gji/ggab453
@@ -11,6 +15,7 @@ Kaestle, E., R. Soomro, C. Weemstra, L. Boschi, and T. Meier, 2016. Two-receiver
 
 Boschi L., C. Weemstra, J. Verbeke, G. Ekstrom, A. Zunino and D. Giardini, 2013. On measuring surface-wave phase velocity from station-station cross-correlation of ambient signal. Geophys. J. Int., 192, 346--358, DOI: 10.1093/gji/ggs023. 
 
+## Installation
 In order to run these scripts you need a recent (as of February 2018) version of Python and the following packages
 
 numpy
@@ -23,6 +28,7 @@ You can find a pre-packed installer, including obspy, on the Obspy webpage. With
 packages can be installed by typing in a console window
 conda install package_name
 
+## Introduction
 The following functions can be found in noise.py
 
 adapt_timespan : compares traces in two streams and cuts them to one or several overlapping time ranges
@@ -33,7 +39,7 @@ get_zero_crossings : extracts zero crossings from a cross correlation trace. Can
 to get zero crossings from horizontal component CCs (RR,TT). Does not support cross-correlations
 of non-identical components (RT,ZR,...)
 extract_phase_velocity : Extracts the phase velocity by picking zero crossings.
-get_smooth_pv : Extracts the phase velocity by smoothing the zero crossings prior to picking.
+get_smooth_pv : Extracts a smooth phase velocity curve by creating a heatmap from zero crossings prior to picking.
 
 You can find a short description and the necessary input parameters for each of these functions in the noise.py script itself. An additional explanation for the get_smooth_pv function is provided in this folder.
 
@@ -47,6 +53,8 @@ or
 
 python example2.py
 for TT cross-correlation and phase-velocity extraction.
+python example2_1.py
+same as example2.py, but illustrating the functionality of providing several cross spectra to the get_smooth_pv function.
 
 Other scripts:
 create_ccs.py is a convencience script to create and maintain a sqlite database of daily records (in mseed or SAC format). All records in the database are cross-correlated and the results are saved. Adapt parameters as needed in the header of the script

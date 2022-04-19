@@ -5,10 +5,10 @@ Created on Thu Nov 24 14:35:18 2016
 @author: emanuel
 
 This script uses the alternative picking method, where the picks are smoothed
-with a cosine kernels before picking.
-You can also try replacing noise.get_smooth_pv with
-noise.extract_phase_velocity. In this case, adapt the input parameters
-according to the documentation of the functions in noise.py.
+with cosine kernels before picking.
+Additionally, we simulate different cross-correlation spectra in this example
+by taking the original spectrum and adding random noise to it. All of the 
+spectra are then processed jointly.
 """
 
 import numpy as np
@@ -104,13 +104,23 @@ if __name__ == '__main__':
         no_spectra += 1
     corr_spectrum/=no_spectra
     
-    
-    smoothed = noise.velocity_filter(freq,corr_spectrum,dist/1000.,
-                                     velband=(6.0,5.5,1.5,0.5),
-                                     return_all=False)
+    # simulating 8 different spectra by adding some random noise
+    # (in practice, this can be applied if the user has calculated monthly 
+    # spectra)
+    freqax_list = []
+    spectra_list = []
+    for i in range(8):
+        corr_spectrum_extra = corr_spectrum.copy()
+        corr_spectrum_extra += np.random.normal(0,0.15,size=len(corr_spectrum))
+        smoothed = noise.velocity_filter(freq,corr_spectrum_extra,dist/1000.,
+                                         velband=(6.0,5.5,1.5,0.5),
+                                         return_all=False)
+        freqax_list.append(freq)
+        spectra_list.append(smoothed)
                                         
     crossings,phase_vel = noise.get_smooth_pv(
-        freq,smoothed,dist/1000.,ref_curve,freqmin=0.004,freqmax=0.25, 
+        freqax_list,spectra_list,dist/1000.,ref_curve,
+        freqmin=0.004,freqmax=0.25, 
         min_vel=1.5, max_vel=5.5,filt_width=3,filt_height=1.0,
         pick_threshold=2.0,horizontal_polarization=True,
         smooth_spectrum=False,plotting=True)

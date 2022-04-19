@@ -84,7 +84,10 @@ years = []
 # correlation components (ZZ,RR,TT)
 comp_correlations = ['ZZ','RR','TT','ZR','RZ','TR','NN','NE']
 
-save_monthly = False # additionally save monthly cross correlations
+# additionally save monthly cross correlations
+# the monthly correlations will be stored in the same pickled python dictionary
+save_monthly = False # will require more disk space if set to True
+monthly_maxlag = 1200. # in seconds, can also be set to None which means same length as total crosscorrelation
 
 # can be a list with file IDs ['GU.CANO','CH.SIMPL','CH.ZUR'], otherwise put None
 only_process_these_stations = None
@@ -110,6 +113,7 @@ import sqlite3
 def process_noise(stream,pair,comp_correlations,window_length,overlap,year,julday,flog):
     global statdict
     global save_monthly
+    global monthly_maxlag
     global pairdict
     global existing_corrdays
 
@@ -157,15 +161,12 @@ def process_noise(stream,pair,comp_correlations,window_length,overlap,year,julda
         
         if (year,julday) in existing_corrdays[pair][components]:
             continue
-    
+                
         # correlations of unrotated components (ZZ,NN,EE,ZN,...)
         if components[0] in 'ZNE' and components[1] in 'ZNE':
             
             st1 = stream.select(network=net1,station=sta1,component=components[0])
             st2 = stream.select(network=net2,station=sta2,component=components[1])
-
-            if len(st1) == 0 or len(st2) == 0:
-                continue
             
             st1,st2 = noise.adapt_timespan(st1,st2,min_overlap=window_length,
                                            interpolate=True,copystreams=True)
@@ -202,7 +203,19 @@ def process_noise(stream,pair,comp_correlations,window_length,overlap,year,julda
                 st1[0].stats.endtime != st2[0].stats.endtime or
                 st1[0].stats.endtime != st2[1].stats.endtime or
                 st1[0].stats.endtime - st1[0].stats.starttime < window_length):
-                raise Exception("this should not be possible!")   
+                print(st1,st2)
+                raise Exception("this should not be possible!")
+
+            # check that the time span is really the same
+            if (np.abs(st1[0].stats.starttime-st1[1].stats.starttime) >= 1/st1[0].stats.sampling_rate/2 or
+                np.abs(st1[0].stats.starttime != st2[0].stats.starttime) >= 1/st1[0].stats.sampling_rate/2 or
+                np.abs(st1[0].stats.starttime != st2[1].stats.starttime) >= 1/st1[0].stats.sampling_rate/2 or
+                np.abs(st1[0].stats.endtime != st1[1].stats.endtime) >= 1/st1[0].stats.sampling_rate/2 or
+                np.abs(st1[0].stats.endtime != st2[0].stats.endtime) >= 1/st1[0].stats.sampling_rate/2 or
+                np.abs(st1[0].stats.endtime != st2[1].stats.endtime) >= 1/st1[0].stats.sampling_rate/2 or
+                np.abs(st1[0].stats.endtime - st1[0].stats.starttime) < window_length):
+                print(st1,st2)
+                raise Exception("this should not be possible!")
             
             # az = azimuth from station1 -> station2
             # baz = azimuth from station2 -> station1
@@ -267,7 +280,8 @@ def process_noise(stream,pair,comp_correlations,window_length,overlap,year,julda
             try:
                 freq,spec,wincount = noise.noisecorr(
                     corrstream1[0],corrstream2[0],
-                    window_length,overlap,whiten=whiten,onebit=onebit)
+                    window_length,overlap,whiten=whiten,onebit=onebit,
+                    cos_taper=True,water_level=30)
             except:
                 print("could not correlate",corrstream1[0].stats.id,
                       corrstream2[0].stats.id,components)
@@ -326,16 +340,25 @@ def process_noise(stream,pair,comp_correlations,window_length,overlap,year,julda
             
             month = str(year)+"."+str(UTCDateTime(year=year,julday=julday).month)
             
+            # save only a spectrum with shorter lag time to save disk space
+            if monthly_maxlag is not None:
+                cc = np.fft.irfft(corr_spectrum)
+                dt = 1./freq[-1]/2.
+                cc = np.append(cc[:int(monthly_maxlag/dt)],cc[-int(monthly_maxlag/dt):])
+                corr_spectrum_monthly = np.fft.rfft(cc)
+            else:
+                corr_spectrum_monthly = corr_spectrum
+            
             if not 'spectrum.'+month in corr_dict.keys():
                 
-                corr_dict['spectrum.'+month] = corr_spectrum
+                corr_dict['spectrum.'+month] = corr_spectrum_monthly
                 corr_dict['no_wins.'+month] = np.sum(
                     corr_list[components]['no_windows'])
                 
             else:
             
                 corr_dict['spectrum.'+month] = np.average(
-                    [corr_spectrum,corr_dict['spectrum.'+month]],axis=0,
+                    [corr_spectrum_monthly,corr_dict['spectrum.'+month]],axis=0,
                     weights=[np.sum(corr_list[components]['no_windows']),
                              corr_dict['no_wins.'+month]])
                 corr_dict['no_wins.'+month] += np.sum(
@@ -373,6 +396,7 @@ def getfilepath(stat1,stat2,corr_comp,dist,overlap):
 
     
 def get_julday_filelist(year,julday,comp,staids,window_length):
+    global data_dic
     
     filelist = []
 
@@ -490,7 +514,7 @@ if __name__ == "__main__":
         new_paths = set(pathlist_new) - set(pathlist) #elements that are uniquely in pathlist_new
         print(len(new_paths),"new paths found",flush=True)
         #new_paths = set(pathlist).symmetric_difference(set(pathlist_new))
-        print("Adding new entries (for each file the header is being read, this may take a while)...")
+        print("adding new entries (for each file the header is being read, this may take a while)...")
         #errorfile = open("read_errors_database.txt","w")
         #print("check for errors in",errorfile)
         for filepath in new_paths:
@@ -577,6 +601,9 @@ if __name__ == "__main__":
                     if line.startswith("#"):
                         continue
                     line = line.split()
+                    if len(line)<3:
+                        print("bad entry in statfile:",line)
+                        continue
                     statdict[line[0]] = {}
                     statdict[line[0]]['latitude'] = float(line[1])
                     statdict[line[0]]['longitude'] = float(line[2])
@@ -659,7 +686,8 @@ if __name__ == "__main__":
     #%%
         
     pairdict = {}
-    available_corrdays = []
+    available_corrdays = [] # days for which data is available
+    existing_corrdays = {} # already processed days
     start_abs = None
     end_abs = None
         
@@ -688,15 +716,15 @@ if __name__ == "__main__":
     
     #%%
     ############################                    
-        print("Creating a dictionary of possible station pairs with " +
-              "overlapping time windows.")
+        print("creating a dictionary of available station pairs with " +
+              "overlapping time windows (this may take a while).")
         data_dic = {}
         timezone = ""
         for line in database_list:
             staid,comp,tstart,tend,path = line
-            if only_process_these_stations is not None:
-                if not staid in only_process_these_stations:
-                    continue
+            #if only_process_these_stations is not None:
+            #    if not staid in only_process_these_stations:
+            #        continue
             tstamp = UTCDateTime(tstart)+window_length/2.
             tstamp = (tstamp.year,tstamp.julday)
             if not tstamp in available_corrdays:
@@ -744,16 +772,25 @@ if __name__ == "__main__":
         for pair in pairs:
             
             if only_process_these_stations != None and only_process_these_stations != []:
-                if not (pair[0] in only_process_these_stations and pair[1] in only_process_these_stations):
+                if not (pair[0] in only_process_these_stations or pair[1] in only_process_these_stations):
                     continue
             
             try:
                 dist,az,baz = gps2dist_azimuth(statdict[pair[0]]['latitude'],
-                                                statdict[pair[0]]['longitude'],
-                                                statdict[pair[1]]['latitude'],
-                                                statdict[pair[1]]['longitude'])
+                                               statdict[pair[0]]['longitude'],
+                                               statdict[pair[1]]['latitude'],
+                                               statdict[pair[1]]['longitude'])
             except:
-                raise Exception("No lat/lon information found in statfile for %s or %s" %(pair[0],pair[1]))
+                try:
+                    statdict[pair[0]]['latitude'],statdict[pair[0]]['longitude']
+                except:
+                    print("No lat/lon information found in statfile for %s" %pair[0])
+                try:
+                    statdict[pair[1]]['latitude'],statdict[pair[1]]['longitude']
+                except:
+                    print("No lat/lon information found in statfile for %s" %pair[1])
+                print("station will not be used.")
+                continue
                 
             dist/=1000.
             
@@ -834,6 +871,7 @@ if __name__ == "__main__":
             end_abs = (1000,1)
         else:
             print("found existing correlations between",start_abs,"and",end_abs)
+            print("already existing combinations of station pair and correlation day will be skipped.")
                     
       
                          
@@ -847,9 +885,9 @@ if __name__ == "__main__":
     # share data among processes
     pairdict = mpi_comm.bcast(pairdict,root=0)
     available_corrdays = mpi_comm.bcast(available_corrdays,root=0)
+    existing_corrdays = mpi_comm.bcast(existing_corrdays,root=0)
     start_abs = mpi_comm.bcast(start_abs,root=0)
-    end_abs = mpi_comm.bcast(end_abs,root=0)
-        
+    end_abs = mpi_comm.bcast(end_abs,root=0)        
         
     if False:
         for stat in statdict:
@@ -920,6 +958,9 @@ if __name__ == "__main__":
     time_start=datetime.datetime.now()
     no_processed_days = 0
     
+    pause
+    
+    
     
     for corrday in available_corrdays:
         
@@ -947,7 +988,7 @@ if __name__ == "__main__":
         # do the file reading only on the first process to avoid reading
         # from the HDD by too many processes at once
         if mpi_rank == 0:
-        
+                    
             # check which files need to be read  
             for components in comp_correlations:
 
@@ -965,18 +1006,27 @@ if __name__ == "__main__":
             single_comps = np.unique([c for c in single_comps])
             for component in single_comps:
                 
+                if (only_process_these_stations != None and 
+                    only_process_these_stations != []):
+                    filelist_check = get_julday_filelist(
+                        year,julday,component,only_process_these_stations,
+                        window_length)
+                    if len(filelist_check) == 0:
+                        print("skipping. no station data from 'only_process_these_stations' available.")
+                        continue
+                
                 filelist = get_julday_filelist(year,julday,component,
                                                station_ids,window_length)
                 for fpath in filelist:
                     st = read(fpath)
                     stream += st
-            
+                                
         # wait for the first process (mpi_rank=0, root=0) to get to this point      
         # share read-in data among processes
         #mpi_comm.Barrier()
         stream = mpi_comm.bcast(stream,root=0)
         worklist = mpi_comm.bcast(worklist,root=0)
-        
+                
         if len(stream)==0:
             if mpi_rank==0:
                 print("no data in stream")
@@ -992,12 +1042,13 @@ if __name__ == "__main__":
             
             if i%10000 == 0:
                 print("Processed",i,"/",len(worklist[mpi_rank::mpi_size]),
-                      "pairs",file=flog,flush=True)                
+                      "pairs",file=flog,flush=True)
+
             process_noise(stream,pair,comp_correlations,
                           window_length,overlap,year,julday,flog)
            
         print("Finished processing components for one correlation day.",
-              file=flog,flush=True)                      
+              file=flog,flush=True)
 
         # empty stream
         stream = Stream()  
