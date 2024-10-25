@@ -127,6 +127,67 @@ def snr_cc(symmetric_cc,df,distance,cmin,cmax,intervals,plotting=False):
         plt.subplots_adjust(left=None, bottom=None, right=None, top=None, wspace=None, hspace=None)
     return snr_filt
 
+# currently unused function
+def velocity_filter_function(freq, corr_spectrum, interstation_distance, cmin=1.0, 
+                             cmax=5.0, p=0.05):
+    """ 
+    Filters a frequency-domain cross-spectrum so as to remove all signal
+    corresponding to a specified velocity range.
+    
+    In practice, the procedure (i) inverse-Fourier transforms the cross spectrum 
+    to the time domain; (ii) it zero-pads the resulting time-domain signal at 
+    times corresponding to velocities outside the specified velocity range by 
+    applying a cosine taper (the same cosine taper is applied at the two ends of 
+    the interval); (iii) a forward-Fourier transform brings back the padded 
+    cross correlation to the frequency domain [1]_.
+    
+    Parameters
+    ----------
+    freq : ndarray of shape (n,)
+        Frequency vector
+        
+    cross_spectrum : ndarray of shape (n,)
+        Complex-valued frequency-domain cross_spectrum
+        
+    interstation_distance : float (in km)
+    
+    cmin, cmax : float (in km/s)
+        Velocity range. Default values are 1 and 5
+        
+    p : float
+        Decimal percentage of cosine taper. Default is 0.05 (5%)
+    
+    
+    Returns
+    -------
+    corr : ndarray of shape (n,)
+        Filtered cross-spectrum
+        
+    References
+    ----------
+    .. [1] Sadeghisorkhani et al. 2018, GSpecDisp: a matlab GUI package for 
+        phase-velocity dispersion measurements from ambient-noise correlations,
+        Computers & Geosciences 
+    """
+    
+    dt = 1 / (2 * freq[-1])
+    idx_tmin = int((interstation_distance/cmax)/dt * (1-p/2)) # 5percent extra for taper
+    idx_tmax = int((interstation_distance/cmin)/dt * (1+p/2)) # 5% extra for taper
+    vel_filt_window = cosine_taper(idx_tmax-idx_tmin, p=p)
+    tcorr = np.fft.irfft(corr_spectrum)
+    vel_filt = np.zeros(len(tcorr))
+    vel_filt[idx_tmin : idx_tmax] = vel_filt_window
+    if idx_tmin>1:
+        vel_filt[-idx_tmax+1 : -idx_tmin+1] = vel_filt_window #+1 is just for symmetry reasons
+    elif idx_tmin==1:
+        vel_filt[-idx_tmax+1 : ] = vel_filt_window
+    else: # if idx_tmin==0
+        vel_filt[-idx_tmax+1 : ] = vel_filt_window[:-1]
+    tcorr *= vel_filt
+    corr = np.fft.rfft(tcorr)
+    return corr
+
+#%%
         
 if np.mean(ref_curve[:,1])>1000:
     ref_curve[:,1]/=1000.
@@ -273,14 +334,18 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         
         """ applying velocity filter and SNR filter"""
         if velocity_filter:
-            idx_tmin = int((dist/max_vel)/dt*0.95) # 5percent extra for taper
-            idx_tmax = int((dist/min_vel)/dt*1.05) # 5% extra for taper
-            vel_filt_window = cosine_taper(idx_tmax-idx_tmin,p=0.1)
-            win_samples=int((len(spectrum)-1)*2)
-            vel_filt = np.zeros(win_samples)
-            vel_filt[idx_tmin:idx_tmax] = vel_filt_window
-            vel_filt[-idx_tmax:-idx_tmin] = vel_filt_window
-            #TCORR = np.fft.irfft(spectrum[:,1])#+1j*spectrum[:,2])
+            p=0.05 # percentage taper
+            idx_tmin = int((dist/max_vel)/dt * (1-p/2)) # 5percent extra for taper
+            idx_tmax = int((dist/min_vel)/dt * (1+p/2)) # 5% extra for taper
+            vel_filt_window = cosine_taper(idx_tmax-idx_tmin, p=p)
+            vel_filt = np.zeros((len(spectrum)-1)*2)
+            vel_filt[idx_tmin : idx_tmax] = vel_filt_window
+            if idx_tmin>1:
+                vel_filt[-idx_tmax+1 : -idx_tmin+1] = vel_filt_window #+1 is just for symmetry reasons
+            elif idx_tmin==1:
+                vel_filt[-idx_tmax+1 : ] = vel_filt_window
+            else: # if idx_tmin==0
+                vel_filt[-idx_tmax+1 : ] = vel_filt_window[:-1]
                 
             if snr_filter_time_domain:
                 snr_filt_td = snr_cc(TCORR,1./dt,dist,min_vel,max_vel,intervals,plotting=statpair) > snr_filter_threshold_td
@@ -337,7 +402,8 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         if velocity_filter:
             ccspec = CORR
         else:
-            ccspec = np.fft.rfft(TCORR)
+            ccspec = CORR = np.fft.rfft(TCORR)
+            overall_snr = np.nan
         
         if plotresult:
             print("\n    ---",qualitycheck,"---")
@@ -446,7 +512,8 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
         if len(phase_vel_final)>0:
             plt.xlim(np.max([1./phase_vel_final[-1,0]/2,1.0]),1./ref_curve[0,0])
         plt.legend(numpoints=1)
-        plt.xlim(1./np.max(crossings[:,0]),1./min_freq)
+        if len(crossings)>1:
+        	plt.xlim(1./np.max(crossings[:,0]),1./min_freq)
         plt.gca().set_xscale('log')
         plt.xlabel('period [s]')
         plt.ylabel('velocity [km/s]')
@@ -474,7 +541,8 @@ for i,fname in enumerate(spectralist[mpi_rank::mpi_size]):
             plt.plot([],[],lw=3,color='green',label='snr filter: accepted')
             plt.legend(numpoints=1)
         plt.gca().set_xscale('log')
-        plt.xlim(1./np.max(crossings[:,0]),100)
+        if len(crossings)>1:
+        	plt.xlim(1./np.max(crossings[:,0]),100)
         plt.ylim(min_vel,max_vel)
         if accepted:
             if statpair or plotresult:
