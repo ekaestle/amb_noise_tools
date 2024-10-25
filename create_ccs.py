@@ -958,8 +958,6 @@ if __name__ == "__main__":
     time_start=datetime.datetime.now()
     no_processed_days = 0
     
-    pause
-    
     
     
     for corrday in available_corrdays:
